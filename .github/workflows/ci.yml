@@ -1,0 +1,48 @@
+name: Public Core CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-core-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compile Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          find scripts tests -type f -name '*.py' -print0 | xargs -0 python3 -m py_compile
+
+      - name: Run deterministic tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Enforce public-data boundary
+        run: python3 scripts/validate_public_boundary.py
+
+      - name: Check patch whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...HEAD"
+          else
+            git diff-tree --check -r --root HEAD
+          fi

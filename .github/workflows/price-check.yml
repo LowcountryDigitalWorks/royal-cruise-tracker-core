@@ -1,0 +1,211 @@
+name: Royal Cruise Price Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      notification_test:
+        description: Send an Apprise test instead of a normal check
+        required: false
+        default: false
+        type: boolean
+      scheduler_wake:
+        description: Internal Cloudflare scheduler wake; leave false for normal manual runs
+        required: false
+        default: false
+        type: boolean
+      scheduler_target_at:
+        description: Internal Cloudflare scheduled target timestamp; leave blank for manual runs
+        required: false
+        default: ''
+        type: string
+      scheduler_target_proof:
+        description: Internal HMAC proof for the Cloudflare scheduled target; leave blank for manual runs
+        required: false
+        default: ''
+        type: string
+      scan_group:
+        description: Add-on group to scan for a manual run
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - A
+          - B
+          - C
+      promotion_catalog:
+        description: Force the sailing promotion catalog on this manual run
+        required: false
+        default: false
+        type: boolean
+  # Cloudflare Cron is the sole automatic production wake source after a successful
+  # four-target-window burn-in. Human workflow_dispatch remains available on demand.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: royal-cruise-price-check
+  # Serialize duplicate Cloudflare wakes. Never cancel a Royal run after it may have
+  # started; a queued duplicate re-checks D1 and skips once the target is satisfied.
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Household price checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+
+    env:
+      UPSTREAM_IMAGE: ghcr.io/jdeath/checkroyalcaribbeanprice@sha256:288963644e1f290bc8bdb1d5323bfe2e085349b767f3f1d6b752bb40135b52b7
+      NOTIFICATION_TEST: ${{ inputs.notification_test }}
+      SCAN_GROUP: ${{ inputs.scan_group || 'auto' }}
+      PROMOTION_CATALOG_FORCE: ${{ inputs.promotion_catalog || 'false' }}
+      ROYAL_SCHEDULER_WAKE: ${{ inputs.scheduler_wake || 'false' }}
+
+      CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+
+      ROYAL_PROFILE_JSON: ${{ secrets.ROYAL_PROFILE_JSON }}
+      PRIMARY_RCCL_USERNAME: ${{ secrets.PRIMARY_RCCL_USERNAME }}
+      PRIMARY_RCCL_PASSWORD: ${{ secrets.PRIMARY_RCCL_PASSWORD }}
+      PRIMARY_RCCL_RESERVATION_ID: ${{ secrets.PRIMARY_RCCL_RESERVATION_ID }}
+      PRIMARY_RCCL_PAID_PRICE: ${{ secrets.PRIMARY_RCCL_PAID_PRICE }}
+      PRIMARY_APPRISE_URL: ${{ secrets.PRIMARY_APPRISE_URL }}
+      PRIMARY_MINIMUM_SAVING_ALERT: ${{ vars.PRIMARY_MINIMUM_SAVING_ALERT || '10.00' }}
+      PRIMARY_WATCHLIST_JSON: ${{ secrets.PRIMARY_WATCHLIST_JSON }}
+
+      SECONDARY_ENABLED: ${{ vars.SECONDARY_ENABLED || 'false' }}
+      SECONDARY_RCCL_USERNAME: ${{ secrets.SECONDARY_RCCL_USERNAME }}
+      SECONDARY_RCCL_PASSWORD: ${{ secrets.SECONDARY_RCCL_PASSWORD }}
+      SECONDARY_RCCL_RESERVATION_ID: ${{ secrets.SECONDARY_RCCL_RESERVATION_ID }}
+      SECONDARY_RCCL_PAID_PRICE: ${{ secrets.SECONDARY_RCCL_PAID_PRICE }}
+      SECONDARY_APPRISE_URL: ${{ secrets.SECONDARY_APPRISE_URL }}
+      SECONDARY_MINIMUM_SAVING_ALERT: ${{ vars.SECONDARY_MINIMUM_SAVING_ALERT || '10.00' }}
+      SECONDARY_WATCHLIST_JSON: ${{ secrets.SECONDARY_WATCHLIST_JSON }}
+
+    steps:
+      - name: Checkout tracker runner and due-gate only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          sparse-checkout: |
+            .github/workflows/price-check.yml
+            cloudflare/scheduler-wake.js
+            config/demo-profile.json
+            scripts/runtime_profile.py
+            scripts/run_tracker.py
+            scripts/run_tracker_adaptive.py
+            scripts/run_tracker_adaptive_v2.py
+            scripts/run_tracker_adaptive_v3.py
+            scripts/run_tracker_adaptive_v4.py
+            scripts/royal_check_due.py
+            scripts/schedule_health.py
+            scripts/persist_schedule_health.py
+            scripts/classify_tracker_failure.py
+            tests/test_royal_check_due.py
+            tests/test_cloudflare_scheduler_due_gate.py
+            tests/test_price_check_schedule_contract.py
+            tests/test_tracker_failure_classification.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Validate schedule and due-gate contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/test_royal_check_due.py
+          python3 tests/test_cloudflare_scheduler_due_gate.py
+          python3 tests/test_price_check_schedule_contract.py
+          python3 tests/test_tracker_failure_classification.py
+
+      - name: Decide whether the Royal target window is due
+        id: royal_due
+        shell: bash
+        run: python3 scripts/royal_check_due.py
+
+      - name: Record Cloudflare scheduler dispatch timing
+        if: env.ROYAL_SCHEDULER_WAKE == 'true'
+        shell: bash
+        env:
+          SCHEDULE_HEALTH_PERSIST: 'true'
+          ROYAL_EXACT_TARGET_AT: ${{ inputs.scheduler_target_at }}
+          ROYAL_TARGET_PROOF: ${{ inputs.scheduler_target_proof }}
+          ROYAL_TARGET_PROOF_KEY: ${{ secrets.ACTIONS_DISPATCH_TOKEN }}
+          ROYAL_FALLBACK_TARGET_AT: ${{ steps.royal_due.outputs.target_at }}
+        run: python3 scripts/persist_schedule_health.py
+
+      - name: Record skipped scheduler wake
+        if: steps.royal_due.outputs.due != 'true'
+        shell: bash
+        run: |
+          {
+            echo "## Royal cruise tracker"
+            echo
+            echo "- Result: **SKIPPED BEFORE ROYAL TRAFFIC**"
+            echo "- The most recent configured UTC target window is already satisfied in D1."
+            echo "- Docker pull: skipped"
+            echo "- Royal requests: 0"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull tested upstream image once
+        if: steps.royal_due.outputs.due == 'true'
+        shell: bash
+        run: docker pull "$UPSTREAM_IMAGE"
+
+      - name: Run enabled households and persist sanitized history
+        if: steps.royal_due.outputs.due == 'true'
+        id: tracker
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Royal cruise tracker run"
+            echo
+            echo "- Upstream image: \`$UPSTREAM_IMAGE\`"
+            echo "- Repository checkout: tracker runners plus scheduler/due/failure-health support only"
+            echo "- Routine artifacts: disabled"
+            echo "- D1 history: direct least-privilege API read/write"
+            echo "- Adaptive priority scheduler: enabled"
+            echo "- Initial good-price bootstrap alerts: enabled"
+            echo "- Purchased-order history: enabled"
+            echo "- Product availability/restock history: enabled; unavailable variants are prioritized inside the existing watch budget"
+            echo "- Sailing promo catalog: approximately once daily when due"
+            echo "- Cloudflare scheduler: sole automatic wake at configured UTC target windows"
+            echo "- Scheduler telemetry: sanitized signed Cloudflare-to-GitHub timing only; no Royal request added"
+            echo "- Royal target-window gate: configured UTC target windows for automatic wakes; human manual dispatch excepted"
+            echo "- Concurrent automatic wakes: serialized; queued duplicates re-check D1"
+            echo "- Cloudflare dashboard exposure: none from this workflow"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          tracker_log="$(mktemp)"
+          set +e
+          python3 scripts/run_tracker_adaptive_v4.py 2>&1 | tee "$tracker_log"
+          tracker_status="${PIPESTATUS[0]}"
+          set -e
+
+          if [[ "$tracker_status" -ne 0 ]]; then
+            failure_class="$(python3 scripts/classify_tracker_failure.py "$tracker_log")"
+            {
+              echo "## Tracker failure classification"
+              echo
+              echo "- Result: **FAILED**"
+              echo "- Sanitized class: \`$failure_class\`"
+              echo "- No credentials, reservation identifiers, passenger names, or raw Royal payloads are written to this summary."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Sanitized tracker failure class: $failure_class"
+            rm -f "$tracker_log"
+            exit "$tracker_status"
+          fi
+
+          {
+            echo "## Tracker result"
+            echo
+            echo "- Result: **SUCCESS**"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$tracker_log"
+
+[executed on device: LDW01 (50591764-6dfa-4d70-9d62-6625841749e2)]
