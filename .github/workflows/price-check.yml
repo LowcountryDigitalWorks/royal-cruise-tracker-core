@@ -207,5 +207,3 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           rm -f "$tracker_log"
-
-[executed on device: LDW01 (50591764-6dfa-4d70-9d62-6625841749e2)]
