@@ -54,6 +54,14 @@ class PriceCheckScheduleContractTests(unittest.TestCase):
         self.assertIn("ROYAL_WAKE_CRON", WAKE)
         self.assertIn("expectedCron", WAKE)
 
+    def test_scheduler_telemetry_receives_required_runtime_profile(self):
+        start = WORKFLOW.index("- name: Record Cloudflare scheduler dispatch timing")
+        end = WORKFLOW.index("- name: Record skipped scheduler wake")
+        block = WORKFLOW[start:end]
+        self.assertIn("ROYAL_RUNTIME_MODE: production", block)
+        self.assertIn("ROYAL_PROFILE_JSON: ${{ secrets.ROYAL_PROFILE_JSON }}", block)
+        self.assertIn("SECONDARY_ENABLED: ${{ vars.SECONDARY_ENABLED || 'false' }}", block)
+
     def test_scheduler_telemetry_stays_signed_and_fail_closed(self):
         self.assertIn("schedulerTargetProof", WAKE)
         self.assertIn("scheduler_target_proof", WAKE)
