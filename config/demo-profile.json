@@ -1,0 +1,109 @@
+{
+  "sailing": {
+    "id": "DEMO-2030-01-15",
+    "ship_name": "Example of the Seas",
+    "ship_code": "EX",
+    "sail_date": "2030-01-15",
+    "nights": 3,
+    "itinerary": "Example Port \u2192 Example Island \u2192 Example Port"
+  },
+  "collector_price": 0.01,
+  "fare_alert_savings": 25.0,
+  "traveler_role_labels": {
+    "adult_1": "Adult 1",
+    "adult_2": "Adult 2",
+    "child_1": "Child 1"
+  },
+  "watch_specs": [
+    {
+      "name": "Example Beverage Package",
+      "prefix": "beverage",
+      "product": "DEMO1",
+      "age_field": "adult",
+      "audience": [
+        "adult_1",
+        "adult_2"
+      ],
+      "alert_below": 70.0
+    },
+    {
+      "name": "Example Destination Pass",
+      "prefix": "destination",
+      "product": "DEMO2",
+      "age_field": "child",
+      "audience": [
+        "child_1"
+      ],
+      "alert_below": 50.0
+    }
+  ],
+  "watch_groups": {
+    "A": [
+      "beverage:DEMO1:adult"
+    ],
+    "B": [
+      "destination:DEMO2:child"
+    ],
+    "C": [
+      "beverage:DEMO1:adult",
+      "destination:DEMO2:child"
+    ]
+  },
+  "profiles": [
+    {
+      "label": "primary",
+      "display_name": "Demo household",
+      "username_env": "PRIMARY_RCCL_USERNAME",
+      "password_env": "PRIMARY_RCCL_PASSWORD",
+      "reservation_id_env": "PRIMARY_RCCL_RESERVATION_ID",
+      "paid_price_env": "PRIMARY_RCCL_PAID_PRICE",
+      "apprise_url_env": "PRIMARY_APPRISE_URL",
+      "threshold_env": "PRIMARY_MINIMUM_SAVING_ALERT",
+      "watchlist_env": "PRIMARY_WATCHLIST_JSON",
+      "enabled": true,
+      "eligible_military": false,
+      "booked_military": false,
+      "refundable": false,
+      "use_default_watchlist": true,
+      "cabin": "DEMO-CABIN",
+      "cabin_category": "DEMO",
+      "traveler_roles": {
+        "Demo Adult One": "adult_1",
+        "Demo Adult Two": "adult_2",
+        "Demo Child": "child_1"
+      }
+    }
+  ],
+  "schedule": {
+    "hours_utc": [
+      6,
+      18
+    ],
+    "minute": 5
+  },
+  "local_timezone": "UTC",
+  "adaptive_policy": {
+    "max_watch_specs": 2,
+    "recent_purchase_hours": 20.0,
+    "collector_sentinel_price": 9999.0,
+    "auto_anchors": [
+      "beverage:DEMO1:adult"
+    ],
+    "child_tier_plausibility_products": [
+      "destination:DEMO2:child"
+    ],
+    "child_tier_max_upward_ratio": 1.5,
+    "priorities": {
+      "beverage:DEMO1:adult": {
+        "base_priority": 90,
+        "target_hours": 12,
+        "max_hours": 24
+      },
+      "destination:DEMO2:child": {
+        "base_priority": 70,
+        "target_hours": 24,
+        "max_hours": 48
+      }
+    }
+  }
+}
