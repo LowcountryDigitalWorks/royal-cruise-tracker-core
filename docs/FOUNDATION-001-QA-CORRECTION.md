@@ -17,6 +17,7 @@ This candidate supersedes public-core PR #2. It is reconstructed from public `ma
    - `ROYAL_RUNTIME_MODE` is mandatory.
    - Production mode requires an explicit protected profile.
    - Production mode cannot fall back to `config/demo-profile.json`.
+   - Scheduler telemetry receives the same explicit production profile boundary while it reuses the tracker D1 helper, so an automatic wake cannot fail on an implicit/demo runtime state.
 3. FOUNDATION-001 is explicitly single-enabled-profile in production.
    - Multi-profile production use is deferred until completion evidence is profile-scoped.
 4. Public boundary enforcement is deterministic.
