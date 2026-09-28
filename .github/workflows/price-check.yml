@@ -132,6 +132,9 @@ jobs:
         if: env.ROYAL_SCHEDULER_WAKE == 'true'
         shell: bash
         env:
+          ROYAL_RUNTIME_MODE: production
+          ROYAL_PROFILE_JSON: ${{ secrets.ROYAL_PROFILE_JSON }}
+          SECONDARY_ENABLED: ${{ vars.SECONDARY_ENABLED || 'false' }}
           SCHEDULE_HEALTH_PERSIST: 'true'
           ROYAL_EXACT_TARGET_AT: ${{ inputs.scheduler_target_at }}
           ROYAL_TARGET_PROOF: ${{ inputs.scheduler_target_proof }}
