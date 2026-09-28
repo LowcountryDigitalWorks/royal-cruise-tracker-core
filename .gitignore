@@ -1,0 +1,23 @@
+# Local/private runtime configuration
+.env
+.env.*
+!*.example
+config/private*
+config/local*
+runtime/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Tool/runtime output
+*.log
+output.txt
+proof-output/
+diagnostics/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
