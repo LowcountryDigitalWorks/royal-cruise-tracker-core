@@ -7,6 +7,62 @@ function view(id) {
   return buildPrototypeView(getFixture(id));
 }
 
+const TEST_SCOPE = Object.freeze({
+  itemId: "DEMO-TEST-ITEM",
+  sailingId: "DEMO-TEST-SAILING",
+  category: "DEMO-TEST-CATEGORY",
+  variant: "DEMO-TEST-VARIANT",
+  occupancy: "DEMO-TEST-OCCUPANCY",
+  promotionScope: "DEMO-TEST-PUBLIC",
+});
+
+function testObservation(id, minute, value, overrides = {}) {
+  return {
+    id,
+    observedAt: `2030-06-01T12:${String(minute).padStart(2, "0")}:00Z`,
+    status: "valid",
+    stale: false,
+    value,
+    currency: "USD",
+    priceBasis: "total",
+    taxesFees: "included",
+    sourceClass: "synthetic-public",
+    availability: "available",
+    ...overrides,
+    scope: { ...TEST_SCOPE, ...(overrides.scope ?? {}) },
+  };
+}
+
+function testTarget(value = 90) {
+  return {
+    value,
+    currency: "USD",
+    priceBasis: "total",
+    taxesFees: "included",
+    scope: { ...TEST_SCOPE },
+  };
+}
+
+function testFixture(id, observations, options = {}) {
+  return {
+    id,
+    matrixCase: 10,
+    name: `Demo ${id}`,
+    description: `Synthetic regression fixture ${id}`,
+    item: {
+      name: "Demo regression item",
+      category: "Demo regression category",
+      variant: "Demo regression variant",
+    },
+    observations,
+    options: {
+      recentWindow: 5,
+      meaningfulChange: 2,
+      ...options,
+    },
+  };
+}
+
 test("UX-001 state matrix covers every required case 1 through 20 plus explicit availability degraded states", () => {
   assert.deepEqual([...MATRIX_CASES.keys()].sort((a, b) => a - b), Array.from({ length: 20 }, (_, index) => index + 1));
   assert.equal(MATRIX_CASES.get(1).length, 2, "case 1 must explicitly show both zero and first-observation states");
@@ -72,11 +128,13 @@ test("case 7: record low is explicit and not color-only", () => {
   assert.ok(result.historyRows.some((row) => row.markers.includes("Record low")));
 });
 
-test("case 8: target first hit alerts once", () => {
+test("case 8: target first hit alerts once and keeps first-hit wording", () => {
   const result = view("case-08-target-hit");
   assert.equal(result.analysis.target.event, "hit");
   assert.equal(result.analysis.target.alert, true);
-  assert.ok(result.changes.entries.some((entry) => entry.title === "Target reached"));
+  const targetHit = result.changes.entries.find((entry) => entry.title === "Target reached");
+  assert.ok(targetHit);
+  assert.match(targetHit.detail, /first time in this sequence/);
 });
 
 test("case 9: steady reached target does not create a repeated latest alert", () => {
@@ -87,7 +145,7 @@ test("case 9: steady reached target does not create a repeated latest alert", ()
   assert.equal(result.changes.entries.filter((entry) => entry.title === "Target reached").length, 1);
 });
 
-test("case 10: threshold re-arms and can later hit again", () => {
+test("case 10: threshold re-arms and can immediately hit again", () => {
   const result = view("case-10-target-rearm");
   const titles = result.changes.entries.map((entry) => entry.title);
   assert.equal(result.analysis.target.event, "hit");
@@ -96,6 +154,25 @@ test("case 10: threshold re-arms and can later hit again", () => {
   assert.equal(titles.filter((title) => title === "Target reached").length, 2);
   const latestTargetHit = result.changes.entries.find((entry) => entry.title === "Target reached");
   assert.match(latestTargetHit.detail, /again after a re-arm/);
+  assert.doesNotMatch(latestTargetHit.detail, /first time/);
+});
+
+test("delayed target re-hit remains a re-hit after an intervening not-reached observation", () => {
+  const result = buildPrototypeView(testFixture("delayed-rehit", [
+    testObservation("delayed-a", 1, 101),
+    testObservation("delayed-b", 2, 89),
+    testObservation("delayed-c", 3, 96),
+    testObservation("delayed-d", 4, 95),
+    testObservation("delayed-e", 5, 87),
+  ], { target: testTarget(90) }));
+
+  const targetHits = result.changes.entries.filter((entry) => entry.title === "Target reached");
+  assert.equal(result.analysis.target.event, "hit");
+  assert.equal(result.analysis.target.alert, true);
+  assert.equal(targetHits.length, 2);
+  assert.match(targetHits[0].detail, /again after a re-arm/);
+  assert.doesNotMatch(targetHits[0].detail, /first time/);
+  assert.match(targetHits[1].detail, /first time in this sequence/);
 });
 
 test("case 11: contiguous unavailable to available evidence yields restock", () => {
@@ -113,7 +190,7 @@ test("explicit degraded state: final unavailable remains visible in the Decision
   assert.ok(result.changes.entries.some((entry) => entry.title === "Observed unavailable"));
 });
 
-test("explicit degraded state: final not-open remains visible without fabricating a current price", () => {
+test("explicit degraded state: final not-open remains visible without fabricating a current price or fresh target conclusion", () => {
   const result = view("case-11-not-open");
   assert.equal(result.analysis.availability.current, "not-open");
   assert.equal(result.availability.text, "Not open");
@@ -121,6 +198,9 @@ test("explicit degraded state: final not-open remains visible without fabricatin
   assert.equal(result.analysis.freshPriceEvidence, false);
   assert.equal(result.value.value, "Incomplete");
   assert.match(result.value.qualifier, /Last complete price/);
+  assert.match(result.target.status, /in prior complete history/);
+  assert.notEqual(result.target.status, "Not reached");
+  assert.equal(result.analysis.target.alert, false);
 });
 
 test("case 12: provider failure breaks restock continuity", () => {
@@ -131,25 +211,31 @@ test("case 12: provider failure breaks restock continuity", () => {
   assert.ok(result.changes.entries.some((entry) => entry.title === "Observation failed"));
 });
 
-test("case 13: stale latest evidence is labeled stale and cannot emit a fresh event", () => {
+test("case 13: stale latest evidence is labeled stale and target state is historical only", () => {
   const result = view("case-13-stale");
   assert.equal(result.analysis.latestState, "stale");
   assert.equal(result.analysis.freshPriceEvidence, false);
   assert.equal(result.health.text, "Observation stale");
   assert.ok(result.evidenceLabels.includes("Observation stale"));
   assert.equal(result.analysis.target.alert, false);
+  assert.match(result.target.status, /in prior complete history/);
+  assert.notEqual(result.target.status, "Reached");
+  assert.notEqual(result.target.status, "Not reached");
 });
 
-test("case 14: failed latest evidence is not converted to sold out or a current price", () => {
+test("case 14: failed latest evidence is not converted to sold out, a current price, or a fresh target conclusion", () => {
   const result = view("case-14-failed");
   assert.equal(result.analysis.latestState, "failed");
   assert.equal(result.value.value, "Unavailable");
   assert.equal(result.availability.text, "Observation unknown");
   assert.ok(result.evidenceLabels.includes("Observation failed"));
   assert.ok(!JSON.stringify(result).toLowerCase().includes("sold out"));
+  assert.match(result.target.status, /in prior complete history/);
+  assert.notEqual(result.target.status, "Not reached");
+  assert.equal(result.analysis.target.alert, false);
 });
 
-test("case 15: incomplete latest price keeps old price historical only while availability remains independent", () => {
+test("case 15: incomplete latest price keeps old price and target state historical only while availability remains independent", () => {
   const result = view("case-15-incomplete");
   assert.equal(result.analysis.freshPriceEvidence, false);
   assert.equal(result.value.value, "Incomplete");
@@ -158,11 +244,16 @@ test("case 15: incomplete latest price keeps old price historical only while ava
   assert.equal(result.analysis.target.alert, false);
   assert.equal(result.availability.text, "Available");
   assert.ok(result.changes.entries.some((entry) => entry.title === "Latest price incomplete"));
+  assert.match(result.target.status, /in prior complete history/);
+  assert.notEqual(result.target.status, "Not reached");
 });
 
-test("case 16: currency, price basis, source, and scope mismatch render comparison unavailable", () => {
+test("case 16: incompatible numeric observations stay out of the shared quantitative history series", () => {
   const result = view("case-16-noncomparable");
   const reasons = result.analysis.comparisonToLatestPriorPrice.reasons;
+  const prior = result.historyRows.find((row) => row.id === "compare-a");
+  const current = result.historyRows.find((row) => row.id === "compare-b");
+
   assert.equal(result.comparison.status, "non-comparable");
   assert.ok(result.evidenceLabels.includes("Comparison unavailable"));
   assert.ok(reasons.includes("currency-mismatch"));
@@ -173,6 +264,43 @@ test("case 16: currency, price basis, source, and scope mismatch render comparis
   assert.ok(reasons.includes("scope-variant-mismatch"));
   assert.ok(reasons.includes("scope-occupancy-mismatch"));
   assert.ok(reasons.includes("scope-promotionScope-mismatch"));
+
+  assert.equal(prior.observedNumericValue, 104);
+  assert.equal(prior.comparableSeries, false);
+  assert.equal(prior.numericValue, null);
+  assert.ok(prior.markers.includes("Non-comparable evidence"));
+  assert.ok(!prior.markers.includes("Record low"));
+
+  assert.equal(current.observedNumericValue, 92);
+  assert.equal(current.comparableSeries, true);
+  assert.equal(current.numericValue, 92);
+});
+
+test("same numeric value does not grant a Record low marker to non-comparable evidence", () => {
+  const result = buildPrototypeView(testFixture("same-number-noncomparable", [
+    testObservation("same-a", 1, 90),
+    testObservation("same-b", 2, 90, {
+      currency: "CAD",
+      priceBasis: "per-person",
+      sourceClass: "synthetic-personalized-demo",
+      scope: {
+        variant: "DEMO-OTHER-VARIANT",
+        promotionScope: "DEMO-PERSONALIZED",
+      },
+    }),
+  ]));
+
+  const prior = result.historyRows.find((row) => row.id === "same-a");
+  const current = result.historyRows.find((row) => row.id === "same-b");
+
+  assert.equal(result.comparison.status, "non-comparable");
+  assert.equal(prior.comparableSeries, false);
+  assert.equal(prior.numericValue, null);
+  assert.ok(prior.markers.includes("Non-comparable evidence"));
+  assert.ok(!prior.markers.includes("Record low"));
+  assert.equal(current.comparableSeries, true);
+  assert.equal(current.numericValue, 90);
+  assert.ok(current.markers.includes("Record low"));
 });
 
 test("case 17: missing policy stays explicitly unknown", () => {

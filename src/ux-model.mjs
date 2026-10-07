@@ -201,21 +201,33 @@ function historyRows(fixture, analysis) {
   const currentId = analysis.current?.id ?? null;
   const previousId = analysis.previous?.id ?? null;
   const recordLow = analysis.recordLow;
+  const seriesAnchor = analysis.current ?? null;
+
   return fixture.observations.map((observation) => {
     const complete = isCompleteRawPrice(observation);
-    const rawValue = finiteNumber(observation.value) ? formatMoney(observation.value, observation.currency) : "Not observed";
+    const observedNumericValue = finiteNumber(observation.value) ? observation.value : null;
+    const comparableSeries = Boolean(
+      seriesAnchor
+      && complete
+      && compareObservations(observation, seriesAnchor).comparable,
+    );
+    const rawValue = observedNumericValue === null ? "Not observed" : formatMoney(observation.value, observation.currency);
     const markers = [];
     if (observation.id === currentId) markers.push(analysis.freshPriceEvidence ? "Current" : "Last complete price");
     if (observation.id === previousId) markers.push("Previous comparable");
-    if (complete && recordLow !== null && observation.value === recordLow) markers.push("Record low");
+    if (comparableSeries && recordLow !== null && observation.value === recordLow) markers.push("Record low");
     if (observation.status === "failed") markers.push("Failed observation");
     else if (observation.stale) markers.push("Stale observation");
     else if (!complete) markers.push("Incomplete price evidence");
+    else if (!comparableSeries) markers.push("Non-comparable evidence");
+
     return {
       id: observation.id,
       observedAt: formatObservedAt(observation.observedAt),
       rawValue,
-      numericValue: finiteNumber(observation.value) ? observation.value : null,
+      observedNumericValue,
+      numericValue: comparableSeries ? observation.value : null,
+      comparableSeries,
       status: observation.status,
       stale: observation.stale,
       complete,
@@ -223,7 +235,11 @@ function historyRows(fixture, analysis) {
       sourceClass: observation.sourceClass,
       priceBasis: [observation.currency ?? "unknown currency", observation.priceBasis ?? "unknown basis", observation.taxesFees ?? "unknown taxes/fees"].join(" · "),
       markers,
-      tone: observation.status === "failed" ? "danger" : observation.stale || !complete ? "warning" : "neutral",
+      tone: observation.status === "failed"
+        ? "danger"
+        : observation.stale || !complete || !comparableSeries
+          ? "warning"
+          : "neutral",
     };
   });
 }
@@ -232,7 +248,7 @@ function prefixAnalyses(fixture) {
   return fixture.observations.map((_, index) => analyzeHistory(fixture.observations.slice(0, index + 1), fixture.options));
 }
 
-function eventForPrefix(analysis, previousAnalysis) {
+function eventForPrefix(analysis, previousAnalysis, priorTargetHitSeen = false) {
   const latest = analysis.latest;
   if (!latest) return null;
   const at = formatObservedAt(latest.observedAt);
@@ -253,11 +269,12 @@ function eventForPrefix(analysis, previousAnalysis) {
     return { kind: "availability", title: "Observed unavailable", detail: "The latest valid observation is unavailable; provider failure is handled separately.", at, tone: "warning" };
   }
   if (analysis.target.event === "hit" && analysis.target.alert) {
-    const wasRearmed = previousAnalysis?.target?.event === "rearmed";
     return {
       kind: "target",
       title: "Target reached",
-      detail: wasRearmed ? "Target was reached again after a re-arm." : "Target threshold crossed for the first time in this sequence.",
+      detail: priorTargetHitSeen
+        ? "Target was reached again after a re-arm."
+        : "Target threshold crossed for the first time in this sequence.",
       at,
       tone: "positive",
     };
@@ -295,9 +312,12 @@ function changeFeed(fixture, analysis) {
   }
   const prefixes = prefixAnalyses(fixture);
   const entries = [];
+  let priorTargetHitSeen = false;
+
   prefixes.forEach((prefix, index) => {
-    const event = eventForPrefix(prefix, prefixes[index - 1] ?? null);
+    const event = eventForPrefix(prefix, prefixes[index - 1] ?? null, priorTargetHitSeen);
     if (event) entries.push({ ...event, key: `${fixture.id}-${index}` });
+    if (prefix.target.event === "hit" && prefix.target.alert) priorTargetHitSeen = true;
   });
 
   let note = "Newest meaningful evidence first. Unchanged conditions are suppressed.";
@@ -330,9 +350,11 @@ export function buildPrototypeView(fixture) {
     ? "Not configured"
     : analysis.target.status === "non-comparable"
       ? "Comparison unavailable"
-      : analysis.target.reached
-        ? analysis.freshPriceEvidence ? "Reached" : "Reached in prior complete history"
-        : "Not reached";
+      : analysis.freshPriceEvidence
+        ? analysis.target.reached ? "Reached" : "Not reached"
+        : analysis.target.reached
+          ? "Reached in prior complete history"
+          : "Not reached in prior complete history";
   const evidenceLabels = analysis.labels.map((label) => LABEL_TEXT[label] ?? label);
   if (comparison.status === "non-comparable" && !evidenceLabels.includes("Comparison unavailable")) evidenceLabels.push("Comparison unavailable");
 
