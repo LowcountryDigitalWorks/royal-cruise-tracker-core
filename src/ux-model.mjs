@@ -253,11 +253,11 @@ function eventForPrefix(analysis, previousAnalysis) {
     return { kind: "availability", title: "Observed unavailable", detail: "The latest valid observation is unavailable; provider failure is handled separately.", at, tone: "warning" };
   }
   if (analysis.target.event === "hit" && analysis.target.alert) {
-    const wasPreviouslyReached = previousAnalysis?.target?.reached === true;
+    const wasRearmed = previousAnalysis?.target?.event === "rearmed";
     return {
       kind: "target",
       title: "Target reached",
-      detail: wasPreviouslyReached ? "Target was reached again after a re-arm." : "Target threshold crossed for the first time in this sequence.",
+      detail: wasRearmed ? "Target was reached again after a re-arm." : "Target threshold crossed for the first time in this sequence.",
       at,
       tone: "positive",
     };

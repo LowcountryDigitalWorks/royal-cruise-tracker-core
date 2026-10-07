@@ -97,6 +97,8 @@ test("case 10: threshold re-arms and can later hit again", () => {
   assert.equal(result.analysis.target.alert, true);
   assert.ok(titles.includes("Target condition re-armed"));
   assert.equal(titles.filter((title) => title === "Target reached").length, 2);
+  const latestTargetHit = result.changes.entries.find((entry) => entry.title === "Target reached");
+  assert.match(latestTargetHit.detail, /again after a re-arm/);
 });
 
 test("case 11: contiguous unavailable to available evidence yields restock", () => {
