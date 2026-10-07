@@ -81,8 +81,8 @@ function contrastRatio(foreground, background) {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-test("key text and focus palette pairs meet at least 4.0:1 contrast", () => {
-  const pairs = [
+test("normal text palette pairs meet 4.5:1 and focus indicator meets 3:1 contrast", () => {
+  const textPairs = [
     ["102a3a", "ffffff"],
     ["536672", "ffffff"],
     ["225c57", "ffffff"],
@@ -90,10 +90,10 @@ test("key text and focus palette pairs meet at least 4.0:1 contrast", () => {
     ["6b4a00", "fff3d7"],
     ["792929", "fbe8e8"],
     ["344650", "edf1f3"],
-    ["8b5cf6", "ffffff"],
     ["ffffff", "102a3a"],
   ];
-  for (const [foreground, background] of pairs) {
-    assert.ok(contrastRatio(foreground, background) >= 4, `${foreground} on ${background}`);
+  for (const [foreground, background] of textPairs) {
+    assert.ok(contrastRatio(foreground, background) >= 4.5, `${foreground} on ${background}`);
   }
+  assert.ok(contrastRatio("8b5cf6", "ffffff") >= 3, "focus indicator on white");
 });
