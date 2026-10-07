@@ -22,6 +22,8 @@ The current public foundation includes:
 - a manual/event-dispatch price-check workflow;
 - deterministic public CI.
 
+FOUNDATION-002 additionally defines a dependency-free provider-neutral decision/history semantic core and hardens the public path/text boundary required before any synthetic UI/static prototype.
+
 No workflow in this repository automatically buys, cancels, refunds, rebooks, pays for, or checks in a reservation.
 
 ## Public/private boundary
@@ -41,6 +43,10 @@ Real deployment data belongs in protected runtime configuration and must never b
 
 Production configuration is expected through protected GitHub/Cloudflare runtime values. The committed `config/demo-profile.json` exists only for tests and examples.
 
+Tracked relative paths/filenames are also treated as public data. Public-boundary validation scans those paths plus tracked UTF-8/text-like content and applies equivalent checks to reachable git history. A green validator is a guardrail, not proof of exhaustive PII detection; synthetic-only content, pinned secret-history scanning, and human exact-artifact review remain required.
+
+The first public UX prototype must use synthetic text/source assets by default. Screenshots, exported customer/provider artifacts, and opaque downloaded images/fonts/archives require separate provenance, privacy, and metadata review rather than relying on the text validator. See `docs/FOUNDATION-002-SEMANTICS.md`.
+
 ## Runtime profile
 
 Every executable use must set `ROYAL_RUNTIME_MODE` explicitly:
@@ -51,6 +57,14 @@ Every executable use must set `ROYAL_RUNTIME_MODE` explicitly:
 FOUNDATION-001 intentionally supports **exactly one enabled production profile** because target-window completion evidence is global. Multi-profile production use requires a later profile-scoped due-gate design.
 
 The profile defines the sailing, watch policy, traveler-to-pseudonymous-role mapping, schedule, and the names of environment variables that hold protected credentials.
+
+## Decision/history semantics
+
+`src/decision-history.mjs` is pure and dependency-free. It accepts synthetic/provider-neutral observation history and derives only evidence-supported current/previous comparison, counts/ranges/record lows, threshold transitions, availability/restock state, staleness/failure state, and descriptive labels.
+
+Comparability requires compatible price basis and scope. Unknown dimensions do not silently equal one another. Failed observations do not become sold-out/price facts, stale/failed latest evidence cannot emit a fresh target alert, and threshold alerts require a transition/re-arm rather than repeating on an unchanged condition.
+
+The module does not implement buy/wait prediction, future-price prediction, recommendation-accuracy claims, or transaction behavior. Configured policy/deadline metadata remains descriptive; lower observed price alone does not establish repricing/cancellation eligibility.
 
 ## Workflows
 
@@ -73,7 +87,7 @@ The workflow preserves a due gate before Docker or Royal traffic. Automatic/even
 - Provider-capable public runs suppress child stdout/stderr and child step summaries; only allowlisted generic status/failure classes may reach public Actions output.
 - D1 stores sanitized/pseudonymous operational history, not Royal credentials.
 - Production execution fails closed before D1/Docker/Royal when a protected real profile is absent.
-- Public source must pass current-tree and reachable-history boundary validation, pinned actionlint, and a pinned Betterleaks history scan before acceptance.
+- Public source must pass tracked-path/text current-tree validation, equivalent reachable-history validation, pinned actionlint, and a pinned Betterleaks history scan before acceptance.
 
 ## Upstream
 
@@ -92,6 +106,8 @@ Run the deterministic checks:
 ```bash
 ROYAL_RUNTIME_MODE=demo python3 -m py_compile scripts/*.py
 ROYAL_RUNTIME_MODE=demo python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --check src/decision-history.mjs
+node --test tests/test_decision_history.mjs
 python3 scripts/validate_public_boundary.py
 python3 scripts/validate_public_history.py
 git diff --check

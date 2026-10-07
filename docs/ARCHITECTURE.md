@@ -38,6 +38,26 @@ A real deployment must supply private values at runtime instead of modifying com
 
 Adaptive v1-v4 extend this behavior with scheduling, history, purchased-order state, promotion context, and availability/restock intelligence.
 
+### Decision/history semantic core
+
+`src/decision-history.mjs` is a pure, dependency-free semantic layer for a later synthetic-only decision/history UX.
+
+It has no network, storage, provider, or rendering behavior. It accepts synthetic/provider-neutral observation records and deterministically derives only evidence-supported state such as:
+
+- current and immediately previous valid comparable observations;
+- comparable observation count, record low, and recent observed range;
+- comparable delta/percentage;
+- target threshold state and re-arm semantics;
+- contiguous availability transitions/restock;
+- stale/failed/unknown state;
+- evidence labels such as `new low observed`, `target reached`, `meaningful drop`, `available again`, or `no meaningful change`.
+
+Unknown comparison dimensions do not silently equal one another. Failed observations remain health/history evidence but do not become price or availability facts. Stale/failed latest evidence cannot generate a fresh decision alert.
+
+Configured policy/deadline metadata may be carried descriptively, but one universal Royal final-payment/repricing/cancellation rule is not encoded. Lower observed price alone does not imply eligibility.
+
+The exact contract and first-UI asset policy are documented in `docs/FOUNDATION-002-SEMANTICS.md`.
+
 ### Due gate
 
 `scripts/royal_check_due.py` loads target windows from the runtime profile.
@@ -74,6 +94,14 @@ The price-check workflow is not triggered by pull requests. It remains manual/ev
 
 Because this repository is public, workflow stdout/stderr and step summaries are treated as a public interface. Provider-capable execution runs behind `scripts/public_runner.py`, which keeps child logs and child summaries ephemeral and emits only generic success/failure classification. The due gate similarly suppresses exact target/evidence timestamps in public summaries.
 
+## Public source and asset boundary
+
+Tracked relative paths/filenames are public data and are scanned against the accepted private-literal classes. Tracked UTF-8/text-like content is scanned without relying on a UI-extension allowlist, and the same path/content protections apply across every commit reachable from HEAD.
+
+These validators are safety guardrails, not exhaustive PII detection. Synthetic-only source/fixtures, secret-history scanning, and exact-artifact human review remain required layers.
+
+For the first UX prototype, use synthetic text/source assets by default. Screenshots, exported customer/provider artifacts, opaque downloaded images/fonts/archives, and similar binary assets are not permitted merely for visual polish. Any later binary asset requires separate provenance, privacy, and metadata review.
+
 ## Private deployment boundary
 
 A production deployment may provide:
@@ -89,6 +117,8 @@ Those values are deployment configuration, not public source.
 ## Data handling
 
 D1 may store sanitized operational history needed for price intelligence. Credentials, raw booking documents, reservation IDs, raw passenger names, payment-card data, and private notification endpoints do not belong in the public repository.
+
+Public-repository sanitization is distinct from private deployment observation state. Private runtime observations may remain in protected deployment state, while only synthetic/public-safe source, history, logs, and fixtures belong here.
 
 ## Cutover model
 
