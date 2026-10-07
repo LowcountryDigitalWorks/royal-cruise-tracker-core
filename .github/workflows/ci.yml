@@ -44,6 +44,17 @@ jobs:
       - name: Run decision/history semantic tests
         run: node --test tests/test_decision_history.mjs
 
+      - name: Check UX prototype module syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/ux-fixtures.mjs
+          node --check src/ux-model.mjs
+          node --check prototype/app.mjs
+
+      - name: Run deterministic UX prototype tests
+        run: node --test tests/test_ux_model.mjs tests/test_ux_static.mjs
+
       - name: Enforce current-tree public-data boundary
         run: python3 scripts/validate_public_boundary.py
 

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Royal Cruise Tracker — Synthetic Decision History Prototype</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to decision evidence</a>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <div>
+        <p class="eyebrow">Royal Cruise Tracker · synthetic prototype</p>
+        <h1>Decision evidence, without the guesswork</h1>
+        <p class="lede">A public-safe demonstration of observed price, history, comparison quality, and meaningful change. No live booking data or provider traffic is used.</p>
+      </div>
+      <div class="prototype-badge" aria-label="Prototype status">Synthetic only</div>
+    </div>
+  </header>
+
+  <main id="main-content" class="shell page-grid">
+    <section class="scenario-panel panel" aria-labelledby="scenario-heading">
+      <div class="section-heading-row">
+        <div>
+          <p class="eyebrow">QA state matrix</p>
+          <h2 id="scenario-heading">Choose a synthetic evidence state</h2>
+        </div>
+        <span id="matrix-case" class="matrix-case">Case —</span>
+      </div>
+      <p id="scenario-help" class="muted">Each option is a deterministic synthetic fixture covering an accepted UX/semantic case.</p>
+      <label class="field-label" for="scenario-select">Synthetic scenario</label>
+      <select id="scenario-select" aria-describedby="scenario-help"></select>
+      <p id="scenario-description" class="scenario-description"></p>
+    </section>
+
+    <section class="decision-section" aria-labelledby="decision-heading">
+      <div class="section-heading-row">
+        <div>
+          <p class="eyebrow">Decision card</p>
+          <h2 id="decision-heading">What was observed?</h2>
+        </div>
+        <span id="health-badge" class="status-badge" data-tone="neutral">Loading…</span>
+      </div>
+
+      <article class="decision-card panel" aria-labelledby="item-name">
+        <div class="decision-topline">
+          <div>
+            <p id="item-category" class="muted compact"></p>
+            <h3 id="item-name"></h3>
+            <p id="item-variant" class="muted compact"></p>
+          </div>
+          <span id="availability-badge" class="status-badge" data-tone="neutral"></span>
+        </div>
+
+        <div class="primary-value-block">
+          <p class="metric-label">Current evidence</p>
+          <p id="current-value" class="primary-value">—</p>
+          <p id="current-qualifier" class="muted"></p>
+        </div>
+
+        <dl class="metric-grid" id="metric-grid">
+          <div>
+            <dt>Observed</dt>
+            <dd id="observed-at">—</dd>
+          </div>
+          <div>
+            <dt>Source class</dt>
+            <dd id="provenance">—</dd>
+          </div>
+          <div>
+            <dt>Price basis</dt>
+            <dd id="basis">—</dd>
+          </div>
+          <div>
+            <dt>Previous comparable</dt>
+            <dd id="previous-value">—</dd>
+          </div>
+          <div>
+            <dt>Absolute change</dt>
+            <dd id="delta-value">—</dd>
+          </div>
+          <div>
+            <dt>Percent change</dt>
+            <dd id="percent-delta">—</dd>
+          </div>
+          <div>
+            <dt>Record low</dt>
+            <dd id="record-low">—</dd>
+          </div>
+          <div>
+            <dt>Recent range</dt>
+            <dd id="recent-range">—</dd>
+          </div>
+          <div>
+            <dt>Prior recent range</dt>
+            <dd id="prior-recent-range">—</dd>
+          </div>
+        </dl>
+
+        <div class="reference-grid">
+          <section class="reference-card" aria-labelledby="baseline-heading">
+            <h4 id="baseline-heading">Synthetic baseline</h4>
+            <div id="baseline-content"></div>
+          </section>
+          <section class="reference-card" aria-labelledby="target-heading">
+            <h4 id="target-heading">Synthetic target</h4>
+            <div id="target-content"></div>
+          </section>
+        </div>
+
+        <section class="evidence-block" aria-labelledby="evidence-heading">
+          <h4 id="evidence-heading">Evidence labels</h4>
+          <div id="evidence-labels" class="chip-list"></div>
+        </section>
+
+        <details class="comparison-details">
+          <summary>How trustworthy is this comparison?</summary>
+          <div class="details-body">
+            <p id="comparison-status" class="strong"></p>
+            <ul id="comparison-reasons" class="reason-list"></ul>
+          </div>
+        </details>
+
+        <section class="policy-block" aria-labelledby="policy-heading">
+          <div>
+            <p class="metric-label">Policy / deadline</p>
+            <h4 id="policy-heading"></h4>
+            <p id="policy-detail" class="muted"></p>
+          </div>
+        </section>
+
+        <aside class="next-step" aria-labelledby="next-step-heading">
+          <p class="eyebrow">Safe next step</p>
+          <h4 id="next-step-heading">Evidence-first guidance</h4>
+          <p id="next-step-text"></p>
+        </aside>
+      </article>
+    </section>
+
+    <section class="history-section panel" aria-labelledby="history-heading">
+      <div class="section-heading-row">
+        <div>
+          <p class="eyebrow">History</p>
+          <h2 id="history-heading">Observed evidence over time</h2>
+        </div>
+        <span id="history-count" class="matrix-case"></span>
+      </div>
+      <p class="muted">The visual strip is descriptive only. The table immediately below contains the same evidence in a non-visual form.</p>
+      <div id="history-visual" class="history-visual" aria-hidden="true"></div>
+      <div class="table-wrap" tabindex="0" aria-label="Scrollable synthetic history table region">
+        <table>
+          <caption>Synthetic observation history with health, availability, basis, and semantic markers</caption>
+          <thead>
+            <tr>
+              <th scope="col">Observed</th>
+              <th scope="col">Value</th>
+              <th scope="col">Evidence state</th>
+              <th scope="col">Availability</th>
+              <th scope="col">Source / basis</th>
+            </tr>
+          </thead>
+          <tbody id="history-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="changes-section panel" aria-labelledby="changes-heading">
+      <div class="section-heading-row">
+        <div>
+          <p class="eyebrow">Changes since last visit</p>
+          <h2 id="changes-heading">Meaningful evidence first</h2>
+        </div>
+      </div>
+      <p id="changes-note" class="muted"></p>
+      <ol id="changes-list" class="changes-list"></ol>
+    </section>
+
+    <aside class="trust-note panel" aria-labelledby="trust-heading">
+      <p class="eyebrow">Prototype boundary</p>
+      <h2 id="trust-heading">What this prototype does not claim</h2>
+      <p>Historical lows and ranges are evidence, not forecasts. A lower observed price does not establish repricing or cancellation eligibility. This prototype performs no purchase, rebooking, cancellation, refund, payment, check-in, notification, or provider action.</p>
+    </aside>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell">
+      <p>UX-001 · deterministic synthetic evidence only · no analytics, trackers, external fonts, or live provider data.</p>
+    </div>
+  </footer>
+
+  <noscript>
+    <div class="shell noscript-note">JavaScript is required to switch among deterministic synthetic QA fixtures. No remote script is loaded.</div>
+  </noscript>
+
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>
