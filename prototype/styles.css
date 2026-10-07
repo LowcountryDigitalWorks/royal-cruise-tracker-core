@@ -188,6 +188,7 @@ h4 {
 .section-heading-row,
 .decision-topline {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   align-items: flex-start;
   justify-content: space-between;
@@ -234,10 +235,13 @@ select {
 }
 
 .status-badge {
+  flex: 0 0 auto;
   padding: 0.42rem 0.7rem;
   background: var(--neutral-bg);
   color: var(--neutral-ink);
   text-align: center;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 .status-badge[data-tone="positive"],

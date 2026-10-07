@@ -40,6 +40,13 @@ test("prototype is mobile-first and has intermediate and desktop breakpoints", (
   assert.ok(css.includes("minmax(0, 1fr)"));
 });
 
+test("narrow heading and decision rows may wrap while status badges remain readable", () => {
+  assert.match(css, /\.section-heading-row,\s*\.decision-topline\s*\{[\s\S]*?flex-wrap:\s*wrap/);
+  assert.match(css, /\.status-badge\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/);
+  assert.match(css, /\.status-badge\s*\{[\s\S]*?white-space:\s*nowrap/);
+  assert.match(css, /\.status-badge\s*\{[\s\S]*?overflow-wrap:\s*normal/);
+});
+
 test("primary page does not force horizontal scrolling while table overflow is local and labeled", () => {
   assert.match(css, /\.table-wrap\s*\{[\s\S]*?overflow-x:\s*auto/);
   assert.match(html, /class="table-wrap" tabindex="0" aria-label="Scrollable synthetic history table region"/);
