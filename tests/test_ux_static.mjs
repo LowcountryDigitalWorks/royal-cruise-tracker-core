@@ -68,3 +68,32 @@ test("prohibited decision claims are absent from static prototype source", () =>
   const lower = all.toLowerCase();
   for (const phrase of banned) assert.equal(lower.includes(phrase), false, phrase);
 });
+
+function relativeLuminance(hex) {
+  const rgb = hex.match(/[0-9a-f]{2}/gi).map((part) => parseInt(part, 16) / 255);
+  const linear = rgb.map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrastRatio(foreground, background) {
+  const a = relativeLuminance(foreground);
+  const b = relativeLuminance(background);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+test("key text and focus palette pairs meet at least 4.0:1 contrast", () => {
+  const pairs = [
+    ["102a3a", "ffffff"],
+    ["536672", "ffffff"],
+    ["225c57", "ffffff"],
+    ["1e5a48", "e7f4ef"],
+    ["6b4a00", "fff3d7"],
+    ["792929", "fbe8e8"],
+    ["344650", "edf1f3"],
+    ["8b5cf6", "ffffff"],
+    ["ffffff", "102a3a"],
+  ];
+  for (const [foreground, background] of pairs) {
+    assert.ok(contrastRatio(foreground, background) >= 4, `${foreground} on ${background}`);
+  }
+});
