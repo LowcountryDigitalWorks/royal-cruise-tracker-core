@@ -30,7 +30,7 @@ The Decision Card renders only evidence supported by the selected fixture and FO
 - optional synthetic baseline and target;
 - record low;
 - current-inclusive recent range and prior-only recent range;
-- availability independent from price completeness;
+- availability independent from price completeness, including explicit final Available, Unavailable, Not open, and Observation unknown states;
 - configured vs unknown policy/deadline state;
 - evidence-first next-step wording.
 
@@ -57,6 +57,7 @@ The feed is derived from repeated prefix analysis of the same synthetic observat
 - target first hit;
 - target re-arm and later hit;
 - available again;
+- observed unavailable;
 - observation failed;
 - observation stale;
 - latest price incomplete;
@@ -66,7 +67,7 @@ A steady target condition is not repeated as a new target alert. Provider failur
 
 ## Synthetic state matrix
 
-Matrix case 1 deliberately has two fixtures so both empty and first-observation behavior are directly inspectable. Cases 2 through 20 have one fixture each.
+The 20 required semantic matrix cases are represented by 23 deterministic synthetic fixtures. Case 1 deliberately has separate zero- and first-observation fixtures. Case 11 includes the restock transition plus explicit final Unavailable and Not open fixtures so degraded availability states are directly inspectable in the Decision Card.
 
 1. `case-01-zero`, `case-01-first` — no observations / first observation
 2. `case-02-two` — two comparable observations
@@ -78,7 +79,7 @@ Matrix case 1 deliberately has two fixtures so both empty and first-observation 
 8. `case-08-target-hit` — target first hit
 9. `case-09-target-steady` — target steady reached without repeat alert
 10. `case-10-target-rearm` — target re-arm and later hit
-11. `case-11-restock` — available -> unavailable -> available
+11. `case-11-restock`, `case-11-unavailable`, `case-11-not-open` — restock transition plus explicit final unavailable/not-open states
 12. `case-12-failure-gap` — provider failure breaks availability continuity
 13. `case-13-stale` — stale latest
 14. `case-14-failed` — failed latest
@@ -111,7 +112,7 @@ The static structure provides:
 - local horizontal scrolling only for the detailed history table, with the scroll region labeled and keyboard focusable;
 - unrestricted text wrapping for long synthetic names and labels.
 
-The primary Decision Card itself does not require horizontal scrolling.
+The primary Decision Card itself does not require horizontal scrolling. Deterministic static tests require normal text palette pairs to meet at least 4.5:1 contrast and the visible focus indicator to meet at least 3:1 non-text contrast.
 
 ## Local deterministic validation
 
@@ -132,6 +133,8 @@ No browser package is required. Where an execution environment already provides 
 
 ```text
 /prototype/?scenario=case-05-drop
+/prototype/?scenario=case-11-unavailable
+/prototype/?scenario=case-11-not-open
 /prototype/?scenario=case-13-stale
 /prototype/?scenario=case-15-incomplete
 /prototype/?scenario=case-16-noncomparable
@@ -149,6 +152,7 @@ The prototype uses descriptive wording such as:
 - `Target reached`;
 - `Meaningful drop`;
 - `Available again`;
+- `Observed unavailable`;
 - `No meaningful change`;
 - `Observation stale`;
 - `Observation failed`;

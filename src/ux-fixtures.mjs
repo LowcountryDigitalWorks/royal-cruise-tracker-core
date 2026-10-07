@@ -144,6 +144,18 @@ export const UX_FIXTURES = Object.freeze([
     observation("restock-b", 2, 101, { availability: "unavailable" }),
     observation("restock-c", 3, 99, { availability: "available" }),
   ], { target: target(94) }),
+  fixture("case-11-unavailable", 11, "Current availability is unavailable", [
+    observation("unavailable-a", 1, 103, { availability: "available" }),
+    observation("unavailable-b", 2, 101, { availability: "unavailable" }),
+  ], { target: target(94) }, {
+    description: "Explicit final unavailable state with valid synthetic price evidence.",
+  }),
+  fixture("case-11-not-open", 11, "Current availability is not open", [
+    observation("not-open-a", 1, 103, { availability: "available" }),
+    observation("not-open-b", 2, null, { availability: "not-open" }),
+  ], { target: target(94) }, {
+    description: "Explicit final not-open state with incomplete latest price evidence.",
+  }),
   fixture("case-12-failure-gap", 12, "Provider failure breaks restock continuity", [
     observation("gap-a", 1, 101, { availability: "unavailable" }),
     failed("gap-failure", 2),

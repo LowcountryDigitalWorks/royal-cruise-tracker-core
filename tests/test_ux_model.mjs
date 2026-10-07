@@ -7,14 +7,11 @@ function view(id) {
   return buildPrototypeView(getFixture(id));
 }
 
-function fixture(id) {
-  return getFixture(id);
-}
-
-test("UX-001 state matrix covers every required case 1 through 20", () => {
+test("UX-001 state matrix covers every required case 1 through 20 plus explicit availability degraded states", () => {
   assert.deepEqual([...MATRIX_CASES.keys()].sort((a, b) => a - b), Array.from({ length: 20 }, (_, index) => index + 1));
   assert.equal(MATRIX_CASES.get(1).length, 2, "case 1 must explicitly show both zero and first-observation states");
-  assert.equal(UX_FIXTURES.length, 21);
+  assert.equal(MATRIX_CASES.get(11).length, 3, "case 11 must include restock plus explicit unavailable and not-open final states");
+  assert.equal(UX_FIXTURES.length, 23);
 });
 
 test("case 1: zero observations never fabricates a price, direction, or change", () => {
@@ -87,7 +84,7 @@ test("case 9: steady reached target does not create a repeated latest alert", ()
   assert.equal(result.analysis.target.event, "steady-reached");
   assert.equal(result.analysis.target.alert, false);
   assert.match(result.changes.note, /No new target alert/);
-  assert.equal(result.changes.entries.filter((entry) => entry.title === "Target reached").length, 1, "the threshold crossing appears once and is not repeated by steady state");
+  assert.equal(result.changes.entries.filter((entry) => entry.title === "Target reached").length, 1);
 });
 
 test("case 10: threshold re-arms and can later hit again", () => {
@@ -106,6 +103,24 @@ test("case 11: contiguous unavailable to available evidence yields restock", () 
   assert.equal(result.analysis.availability.restock, true);
   assert.ok(result.evidenceLabels.includes("Available again"));
   assert.ok(result.changes.entries.some((entry) => entry.title === "Available again"));
+});
+
+test("explicit degraded state: final unavailable remains visible in the Decision Card", () => {
+  const result = view("case-11-unavailable");
+  assert.equal(result.analysis.availability.current, "unavailable");
+  assert.equal(result.availability.text, "Unavailable");
+  assert.equal(result.availability.tone, "danger");
+  assert.ok(result.changes.entries.some((entry) => entry.title === "Observed unavailable"));
+});
+
+test("explicit degraded state: final not-open remains visible without fabricating a current price", () => {
+  const result = view("case-11-not-open");
+  assert.equal(result.analysis.availability.current, "not-open");
+  assert.equal(result.availability.text, "Not open");
+  assert.equal(result.availability.tone, "warning");
+  assert.equal(result.analysis.freshPriceEvidence, false);
+  assert.equal(result.value.value, "Incomplete");
+  assert.match(result.value.qualifier, /Last complete price/);
 });
 
 test("case 12: provider failure breaks restock continuity", () => {
