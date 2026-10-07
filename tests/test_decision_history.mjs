@@ -147,6 +147,7 @@ test("vector 13: observation count and recent range are explicit", () => {
   );
   assert.equal(result.observationCount, 4);
   assert.deepEqual(result.recentRange, { min: 90, max: 100, count: 3 });
+  assert.deepEqual(result.priorRecentRange, { min: 90, max: 110, count: 3 });
 });
 
 test("vector 14: currency and scope mismatch are explicitly non-comparable", () => {
@@ -172,6 +173,7 @@ test("vector 14: currency and scope mismatch are explicitly non-comparable", () 
 test("vector 15: stale latest observation stays stale and suppresses decision labels and alerts", () => {
   const result = analyzeHistory([observation("a", 1, 100), observation("b", 2, 80, { stale: true })], { target });
   assert.equal(result.latestState, "stale");
+  assert.equal(result.freshPriceEvidence, false);
   assert.deepEqual(result.labels, ["stale observation"]);
   assert.equal(result.target.reached, true);
   assert.equal(result.target.alert, false);
@@ -221,4 +223,113 @@ test("unknown policy remains unknown; configured policy is descriptive only", ()
     deadline: "2030-02-01T12:00:00Z",
   });
   assert.ok(!JSON.stringify(result).includes("reprice eligible"));
+});
+
+test("duplicate equality is order-independent for semantically identical scope", () => {
+  const a = observation("a", 1, 100);
+  const b = observation("b", 2, 90);
+  const reorderedScope = Object.fromEntries(Object.entries(b.scope).reverse());
+  const result = analyzeHistory([a, b, { ...b, scope: reorderedScope }]);
+  assert.equal(result.duplicateCount, 1);
+  assert.equal(result.rawObservationCount, 2);
+});
+
+test("duplicate equality fails closed when a material scope field changes", () => {
+  const b = observation("b", 2, 90);
+  assert.throws(
+    () => analyzeHistory([b, { ...b, scope: { ...b.scope, variant: "DEMO-OTHER" } }]),
+    /conflicting duplicate observation id/,
+  );
+});
+
+test("latest valid observation without a value keeps older price history but emits no fresh price labels", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100),
+    observation("b", 2, 80),
+    observation("c", 3, null),
+  ], { target });
+  assert.equal(result.latest.id, "c");
+  assert.equal(result.current.id, "b");
+  assert.equal(result.previous.id, "a");
+  assert.equal(result.freshPriceEvidence, false);
+  assert.equal(result.target.reached, true);
+  assert.equal(result.target.event, null);
+  assert.equal(result.target.alert, false);
+  assert.deepEqual(result.labels, []);
+});
+
+test("latest valid observation with unknown price basis emits no fresh price labels", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100),
+    observation("b", 2, 80),
+    observation("c", 3, 70, { priceBasis: null }),
+  ], { target });
+  assert.equal(result.latest.id, "c");
+  assert.equal(result.current.id, "b");
+  assert.equal(result.freshPriceEvidence, false);
+  assert.equal(result.target.event, null);
+  assert.equal(result.target.alert, false);
+  assert.deepEqual(result.labels, []);
+});
+
+test("latest valid observation with incomplete comparable scope emits no fresh price labels", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100),
+    observation("b", 2, 80),
+    observation("c", 3, 70, { scope: { variant: null } }),
+  ], { target });
+  assert.equal(result.latest.id, "c");
+  assert.equal(result.current.id, "b");
+  assert.equal(result.freshPriceEvidence, false);
+  assert.equal(result.target.event, null);
+  assert.equal(result.target.alert, false);
+  assert.deepEqual(result.labels, []);
+});
+
+test("availability remains independently current when latest price evidence is incomplete", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100, { availability: "unavailable" }),
+    observation("b", 2, null, { availability: "available" }),
+  ]);
+  assert.equal(result.current.id, "a");
+  assert.equal(result.freshPriceEvidence, false);
+  assert.deepEqual(result.availability, { current: "available", transition: "available-again", restock: true });
+  assert.deepEqual(result.labels, ["available again"]);
+});
+
+test("below-prior-range label is tied to an explicit prior-only window", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100),
+    observation("b", 2, 105),
+    observation("c", 3, 90),
+  ]);
+  assert.deepEqual(result.priorRecentRange, { min: 100, max: 105, count: 2 });
+  assert.deepEqual(result.recentRange, { min: 90, max: 105, count: 3 });
+  assert.ok(result.labels.includes("below prior recent observed range"));
+});
+
+test("current equal to prior minimum is not below the prior recent range", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100),
+    observation("b", 2, 105),
+    observation("c", 3, 100),
+  ]);
+  assert.equal(result.priorRecentRange.min, 100);
+  assert.ok(!result.labels.includes("below prior recent observed range"));
+});
+
+test("current above prior minimum is not below the prior recent range", () => {
+  const result = analyzeHistory([
+    observation("a", 1, 100),
+    observation("b", 2, 105),
+    observation("c", 3, 102),
+  ]);
+  assert.equal(result.priorRecentRange.min, 100);
+  assert.ok(!result.labels.includes("below prior recent observed range"));
+});
+
+test("one prior observation is insufficient for a below-prior-range claim", () => {
+  const result = analyzeHistory([observation("a", 1, 100), observation("b", 2, 90)]);
+  assert.deepEqual(result.priorRecentRange, { min: 100, max: 100, count: 1 });
+  assert.ok(!result.labels.includes("below prior recent observed range"));
 });

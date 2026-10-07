@@ -76,9 +76,16 @@ export function compareObservations(a, b) {
   return { comparable: reasons.length === 0, reasons };
 }
 
+function sameScope(a, b) {
+  const leftKeys = Object.keys(a).sort();
+  const rightKeys = Object.keys(b).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => key === rightKeys[index] && Object.is(a[key], b[key]));
+}
+
 function sameNormalizedObservation(a, b) {
   const keys = ["id", "observedAt", "status", "stale", "value", "currency", "priceBasis", "taxesFees", "sourceClass", "availability"];
-  return keys.every((key) => a[key] === b[key]) && JSON.stringify(a.scope) === JSON.stringify(b.scope);
+  return keys.every((key) => Object.is(a[key], b[key])) && sameScope(a.scope, b.scope);
 }
 
 function normalizeHistory(rawObservations) {
@@ -216,6 +223,10 @@ function policyResult(policy) {
   };
 }
 
+function rangeResult(values) {
+  return values.length ? { min: Math.min(...values), max: Math.max(...values), count: values.length } : null;
+}
+
 export function analyzeHistory(rawObservations, options = {}) {
   const { observations, duplicateCount } = normalizeHistory(rawObservations);
   const latest = observations.at(-1) ?? null;
@@ -245,7 +256,8 @@ export function analyzeHistory(rawObservations, options = {}) {
   const meaningfulChange = finiteNumber(options.meaningfulChange) && options.meaningfulChange >= 0 ? options.meaningfulChange : 0.01;
   const labels = [];
   const latestState = !latest ? "unknown" : latest.status === "failed" ? "failed" : latest.stale ? "stale" : "valid";
-  if (latestState !== "valid" || !current || current.id !== latest?.id) {
+  const freshPriceEvidence = Boolean(latestState === "valid" && current && latest && current.id === latest.id);
+  if (!freshPriceEvidence) {
     targetState = { ...targetState, event: null, alert: false };
   }
 
@@ -253,23 +265,27 @@ export function analyzeHistory(rawObservations, options = {}) {
   if (latestState === "stale") labels.push("stale observation");
   if (latestState === "valid") {
     if (availability.restock) labels.push("available again");
-    if (targetState.reached === true) labels.push("target reached");
-    if (current && previousRecordLow !== null && current.value < previousRecordLow) labels.push("new low observed");
-    if (current && priorRecentValues.length && current.value < Math.min(...priorRecentValues)) labels.push("below recent observed range");
-    if (delta?.comparable && delta.value < 0 && Math.abs(delta.value) >= meaningfulChange) labels.push("meaningful drop");
-    if (delta?.comparable && Math.abs(delta.value) < meaningfulChange) labels.push("no meaningful change");
+    if (freshPriceEvidence) {
+      if (targetState.reached === true) labels.push("target reached");
+      if (previousRecordLow !== null && current.value < previousRecordLow) labels.push("new low observed");
+      if (priorRecentValues.length >= 2 && current.value < Math.min(...priorRecentValues)) labels.push("below prior recent observed range");
+      if (delta?.comparable && delta.value < 0 && Math.abs(delta.value) >= meaningfulChange) labels.push("meaningful drop");
+      if (delta?.comparable && Math.abs(delta.value) < meaningfulChange) labels.push("no meaningful change");
+    }
   }
 
   return {
     latestState,
     latest: stripInternal(latest),
     current: stripInternal(current),
+    freshPriceEvidence,
     previous: stripInternal(previous),
     rawObservationCount: observations.length,
     duplicateCount,
     observationCount: comparableSeries.length,
     recordLow,
-    recentRange: recentValues.length ? { min: Math.min(...recentValues), max: Math.max(...recentValues), count: recentValues.length } : null,
+    recentRange: rangeResult(recentValues),
+    priorRecentRange: rangeResult(priorRecentValues),
     comparisonToLatestPriorPrice: latestPriorComparison,
     delta,
     target: targetState,
