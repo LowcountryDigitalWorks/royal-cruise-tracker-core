@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Validate that committed public-core source remains synthetic/public-safe."""
+"""Validate that tracked public-core source remains synthetic/public-safe."""
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEXT_SUFFIXES = {".md", ".py", ".js", ".mjs", ".json", ".yml", ".yaml", ".toml", ".sql", ".txt"}
 VALIDATOR_PATHS = {"scripts/validate_public_boundary.py", "scripts/validate_public_history.py"}
 
 EMAIL = re.compile(r"\b[A-Z0-9._%+.-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b", re.I)
@@ -25,15 +25,26 @@ ALLOWED_EMAIL_DOMAINS = {"example.com"}
 ALLOWED_PROFILE_PREFIXES = {"PRIMARY", "SECONDARY"}
 
 
-def text_files():
-    for file in ROOT.rglob("*"):
-        if not file.is_file() or ".git" in file.parts:
-            continue
-        rel = file.relative_to(ROOT).as_posix()
-        if rel in VALIDATOR_PATHS:
-            continue
-        if file.suffix.lower() in TEXT_SUFFIXES:
-            yield file
+def git_tracked_paths() -> list[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode:
+        raise RuntimeError("git tracked-file inspection failed")
+    return [item.decode("utf-8", errors="surrogateescape") for item in proc.stdout.split(b"\0") if item]
+
+
+def decode_tracked_text(data: bytes) -> str | None:
+    """Return UTF-8 text for scanable tracked content; binary/opaque bytes return None."""
+    if b"\0" in data:
+        return None
+    try:
+        return data.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError:
+        return None
 
 
 def scan_text(rel: str, text: str) -> list[str]:
@@ -63,6 +74,10 @@ def scan_text(rel: str, text: str) -> list[str]:
     return errors
 
 
+def scan_path(rel: str) -> list[str]:
+    return scan_text(f"path:{rel}", rel)
+
+
 def main() -> int:
     errors: list[str] = []
     demo = json.loads((ROOT / "config" / "demo-profile.json").read_text(encoding="utf-8-sig"))
@@ -81,9 +96,18 @@ def main() -> int:
     for spec in demo.get("watch_specs", []):
         if not str(spec.get("product", "")).startswith("DEMO"):
             errors.append("demo product code is not synthetic")
-    for file in text_files():
-        rel = file.relative_to(ROOT).as_posix()
-        errors.extend(scan_text(rel, file.read_text(encoding="utf-8-sig", errors="replace")))
+
+    for rel in git_tracked_paths():
+        errors.extend(scan_path(rel))
+        if rel in VALIDATOR_PATHS:
+            continue
+        file = ROOT / rel
+        if not file.is_file():
+            continue
+        text = decode_tracked_text(file.read_bytes())
+        if text is not None:
+            errors.extend(scan_text(rel, text))
+
     if errors:
         for error in sorted(set(errors)):
             print(f"ERROR: {error}")
