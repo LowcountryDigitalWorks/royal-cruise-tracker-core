@@ -17,6 +17,10 @@ class PublicCiContractTests(unittest.TestCase):
         self.assertIn("fetch-depth: 0", CI)
         self.assertIn("scripts/validate_public_history.py", CI)
 
+    def test_decision_history_semantics_are_required(self):
+        self.assertIn("node --check src/decision-history.mjs", CI)
+        self.assertIn("node --test tests/test_decision_history.mjs", CI)
+
     def test_pinned_actionlint_is_required(self):
         self.assertIn("v1.7.12", CI)
         self.assertIn("8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8", CI)
