@@ -35,8 +35,14 @@ jobs:
           set -euo pipefail
           find scripts tests -type f -name '*.py' -print0 | xargs -0 python3 -m py_compile
 
-      - name: Run deterministic tests
+      - name: Run deterministic Python tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Check decision/history module syntax
+        run: node --check src/decision-history.mjs
+
+      - name: Run decision/history semantic tests
+        run: node --test tests/test_decision_history.mjs
 
       - name: Enforce current-tree public-data boundary
         run: python3 scripts/validate_public_boundary.py
