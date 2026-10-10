@@ -88,6 +88,7 @@ jobs:
             tests/test_public_runner.py
             tests/test_cloudflare_scheduler_due_gate.py
             tests/test_price_check_schedule_contract.py
+            tests/test_sec_001a_contract.py
             tests/test_tracker_failure_classification.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -105,6 +106,7 @@ jobs:
           python3 tests/test_public_runner.py
           python3 tests/test_cloudflare_scheduler_due_gate.py
           python3 tests/test_price_check_schedule_contract.py
+          python3 tests/test_sec_001a_contract.py
           python3 tests/test_tracker_failure_classification.py
 
       - name: Require protected production runtime profile
@@ -138,7 +140,7 @@ jobs:
           SCHEDULE_HEALTH_PERSIST: 'true'
           ROYAL_EXACT_TARGET_AT: ${{ inputs.scheduler_target_at }}
           ROYAL_TARGET_PROOF: ${{ inputs.scheduler_target_proof }}
-          ROYAL_TARGET_PROOF_KEY: ${{ secrets.ACTIONS_DISPATCH_TOKEN }}
+          ROYAL_TARGET_PROOF_KEY: ${{ secrets.SCHEDULER_TARGET_PROOF_KEY }}
           ROYAL_FALLBACK_TARGET_AT: ${{ steps.royal_due.outputs.target_at }}
           CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -181,14 +183,6 @@ jobs:
           PRIMARY_APPRISE_URL: ${{ secrets.PRIMARY_APPRISE_URL }}
           PRIMARY_MINIMUM_SAVING_ALERT: ${{ vars.PRIMARY_MINIMUM_SAVING_ALERT || '10.00' }}
           PRIMARY_WATCHLIST_JSON: ${{ secrets.PRIMARY_WATCHLIST_JSON }}
-          SECONDARY_ENABLED: ${{ vars.SECONDARY_ENABLED || 'false' }}
-          SECONDARY_RCCL_USERNAME: ${{ secrets.SECONDARY_RCCL_USERNAME }}
-          SECONDARY_RCCL_PASSWORD: ${{ secrets.SECONDARY_RCCL_PASSWORD }}
-          SECONDARY_RCCL_RESERVATION_ID: ${{ secrets.SECONDARY_RCCL_RESERVATION_ID }}
-          SECONDARY_RCCL_PAID_PRICE: ${{ secrets.SECONDARY_RCCL_PAID_PRICE }}
-          SECONDARY_APPRISE_URL: ${{ secrets.SECONDARY_APPRISE_URL }}
-          SECONDARY_MINIMUM_SAVING_ALERT: ${{ vars.SECONDARY_MINIMUM_SAVING_ALERT || '10.00' }}
-          SECONDARY_WATCHLIST_JSON: ${{ secrets.SECONDARY_WATCHLIST_JSON }}
         run: |
           set -euo pipefail
           {

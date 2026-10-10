@@ -25,6 +25,8 @@ It supplies:
 
 A real deployment must supply private values at runtime instead of modifying committed source. FOUNDATION-001 permits exactly one enabled production profile; multi-profile production is deferred until due evidence is profile-scoped.
 
+For that single-profile production contract, the provider-capable process receives only the active primary profile's credential, reservation, notification, threshold, and watchlist environment family. A disabled profile slot may remain described in protected runtime-profile structure, but its secret values are intentionally absent from the provider process. `load_profiles()` evaluates a profile's enable control before reading that profile's secret-backed environment names, so a missing/false disabled-profile control safely prevents dormant secret access.
+
 ### Tracker
 
 `scripts/run_tracker.py` provides the core wrapper:
@@ -77,7 +79,12 @@ Manual owner dispatch remains distinct.
 
 Both the expected cron and GitHub workflow-dispatch URL are runtime values. The source does not name a production repository or hard-code a production cron.
 
-The dispatch target is signed with the existing HMAC proof contract so GitHub can distinguish a scheduler-originated target from a human/manual dispatch.
+Scheduler dispatch uses two separate secret purposes:
+
+- `GITHUB_ACTIONS_DISPATCH_TOKEN` is the GitHub bearer credential and is used only for the workflow-dispatch authorization header;
+- `SCHEDULER_TARGET_PROOF_KEY` is the HMAC key for `scheduler_target_at` and is mapped by GitHub Actions only to runtime `ROYAL_TARGET_PROOF_KEY` for verification.
+
+There is no production-code fallback from the proof key to the bearer token. If the proof key is unavailable or a supplied proof is invalid, the automatic wake may still proceed, but the exact scheduler timestamp is not trusted; sanitized due-gate fallback telemetry is used instead. Telemetry authentication failure therefore cannot silently authorize false exact timing and does not become a Royal/provider acquisition failure.
 
 ## Public workflow trust boundary
 
@@ -94,6 +101,8 @@ The price-check workflow is not triggered by pull requests. It remains manual/ev
 
 Because this repository is public, workflow stdout/stderr and step summaries are treated as a public interface. Provider-capable execution runs behind `scripts/public_runner.py`, which keeps child logs and child summaries ephemeral and emits only generic success/failure classification. The due gate similarly suppresses exact target/evidence timestamps in public summaries.
 
+The production workflow validates the protected profile before provider traffic, then injects only the currently authorized active profile secret family into the provider-capable tracker process. Dormant profile secrets are not exposed merely because the protected profile schema still describes a disabled slot.
+
 ## Public source and asset boundary
 
 Tracked relative paths/filenames are public data and are scanned against the accepted private-literal classes. Tracked UTF-8/text-like content is scanned without relying on a UI-extension allowlist, and the same path/content protections apply across every commit reachable from HEAD.
@@ -107,12 +116,14 @@ For the first UX prototype, use synthetic text/source assets by default. Screens
 A production deployment may provide:
 
 - `ROYAL_PROFILE_JSON`;
-- generic profile credential secrets;
+- the active profile credential/notification/watch values permitted by the single-profile contract;
 - D1 token/account/database values;
-- scheduler dispatch credential and target;
-- optional notification/watch settings.
+- GitHub workflow-dispatch bearer credential;
+- dedicated scheduler target-proof key;
+- scheduler target configuration;
+- optional non-secret notification/watch policy settings.
 
-Those values are deployment configuration, not public source.
+Those values are deployment configuration, not public source. Source acceptance does not provision, rotate, or activate any secret.
 
 ## Data handling
 
@@ -124,4 +135,4 @@ Public-repository sanitization is distinct from private deployment observation s
 
 Public-core acceptance and production activation are separate phases.
 
-A deployment should prove deterministic parity first. Only then may the owning workstream propose changing a scheduler or production workflow target, with explicit current/proposed/rollback evidence.
+A deployment should prove deterministic parity first. Only then may the owning workstream propose provisioning the matching deployment secrets, changing a scheduler or production workflow target, or otherwise activating the accepted source, with explicit current/proposed/rollback evidence. Merging code alone does not create the dedicated proof key, update Cloudflare/GitHub secret state, or authorize production cutover.

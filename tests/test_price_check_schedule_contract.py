@@ -20,13 +20,19 @@ class PriceCheckScheduleContractTests(unittest.TestCase):
         self.assertIn("secrets.CLOUDFLARE_ACCOUNT_ID", WORKFLOW)
         self.assertIn("secrets.CLOUDFLARE_D1_DATABASE_ID", WORKFLOW)
         self.assertIn("PRIMARY_RCCL_USERNAME", WORKFLOW)
-        self.assertIn("SECONDARY_RCCL_USERNAME", WORKFLOW)
+        provider_start = WORKFLOW.index("- name: Run enabled profile through public-safe boundary")
+        provider_block = WORKFLOW[provider_start:]
+        self.assertNotIn("SECONDARY_RCCL_USERNAME", provider_block)
+        self.assertNotIn("SECONDARY_RCCL_PASSWORD", provider_block)
+        self.assertNotIn("SECONDARY_APPRISE_URL", provider_block)
+        self.assertNotIn("SECONDARY_WATCHLIST_JSON", provider_block)
 
     def test_sparse_checkout_contains_public_core_dependencies(self):
         self.assertIn("cloudflare/scheduler-wake.js", WORKFLOW)
         self.assertIn("config/demo-profile.json", WORKFLOW)
         self.assertIn("scripts/runtime_profile.py", WORKFLOW)
         self.assertIn("scripts/royal_check_due.py", WORKFLOW)
+        self.assertIn("tests/test_sec_001a_contract.py", WORKFLOW)
 
     def test_due_gate_runs_before_docker_or_royal(self):
         preflight = WORKFLOW.index("python3 scripts/runtime_profile.py")
@@ -61,11 +67,15 @@ class PriceCheckScheduleContractTests(unittest.TestCase):
         self.assertIn("ROYAL_RUNTIME_MODE: production", block)
         self.assertIn("ROYAL_PROFILE_JSON: ${{ secrets.ROYAL_PROFILE_JSON }}", block)
         self.assertIn("SECONDARY_ENABLED: ${{ vars.SECONDARY_ENABLED || 'false' }}", block)
+        self.assertIn("ROYAL_TARGET_PROOF_KEY: ${{ secrets.SCHEDULER_TARGET_PROOF_KEY }}", block)
+        self.assertNotIn("ACTIONS_DISPATCH_TOKEN", block)
 
     def test_scheduler_telemetry_stays_signed_and_fail_closed(self):
         self.assertIn("schedulerTargetProof", WAKE)
+        self.assertIn("SCHEDULER_TARGET_PROOF_KEY", WAKE)
         self.assertIn("scheduler_target_proof", WAKE)
         self.assertIn("verified_exact_target", PERSIST)
+        self.assertIn("select_target", PERSIST)
         self.assertIn("hmac.compare_digest", PERSIST)
         self.assertNotIn("RCCL_", PERSIST)
 
