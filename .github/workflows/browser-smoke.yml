@@ -1,0 +1,48 @@
+name: Synthetic Browser Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'prototype/**'
+      - 'src/decision-history.mjs'
+      - 'src/ux-fixtures.mjs'
+      - 'src/ux-model.mjs'
+      - 'scripts/browser-smoke.mjs'
+      - 'tests/test_qa_auto_contract.py'
+      - '.github/workflows/browser-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser-smoke:
+    name: dependency-free Chrome/CDP smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+
+    env:
+      ROYAL_RUNTIME_MODE: demo
+      ROYAL_PROFILE_JSON: ''
+      ROYAL_PROFILE_PATH: ''
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify dependency-free browser runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          google-chrome --version
+          node --check scripts/browser-smoke.mjs
+          node -e 'if (typeof fetch !== "function" || typeof WebSocket !== "function") process.exit(1)'
+
+      - name: Run synthetic Chrome/CDP browser smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/browser-smoke.mjs
