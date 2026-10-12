@@ -51,9 +51,13 @@ jobs:
           node --check src/ux-fixtures.mjs
           node --check src/ux-model.mjs
           node --check prototype/app.mjs
+          node --check scripts/browser-smoke.mjs
 
       - name: Run deterministic UX prototype tests
         run: node --test tests/test_ux_model.mjs tests/test_ux_static.mjs
+
+      - name: Run CDP browser smoke harness
+        run: node scripts/browser-smoke.mjs
 
       - name: Enforce current-tree public-data boundary
         run: python3 scripts/validate_public_boundary.py
