@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -100,7 +100,12 @@ async function findChrome() {
   fail("Chrome executable not found; browser smoke cannot be downgraded to PASS");
 }
 
-function safeRepositoryPath(requestUrl) {
+function isWithinRoot(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+export async function safeRepositoryPath(requestUrl) {
   const parsed = new URL(requestUrl, "http://127.0.0.1");
   let pathname;
   try {
@@ -109,10 +114,28 @@ function safeRepositoryPath(requestUrl) {
     return null;
   }
   if (pathname === "/prototype" || pathname === "/prototype/") pathname = "/prototype/index.html";
-  if (!(pathname.startsWith("/prototype/") || pathname.startsWith("/src/"))) return null;
-  const resolved = path.resolve(ROOT, `.${pathname}`);
-  if (!(resolved === ROOT || resolved.startsWith(`${ROOT}${path.sep}`))) return null;
-  return resolved;
+
+  let allowedRoot;
+  let relativePath;
+  if (pathname.startsWith("/prototype/")) {
+    allowedRoot = path.join(ROOT, "prototype");
+    relativePath = pathname.slice("/prototype/".length);
+  } else if (pathname.startsWith("/src/")) {
+    allowedRoot = path.join(ROOT, "src");
+    relativePath = pathname.slice("/src/".length);
+  } else {
+    return null;
+  }
+
+  const resolved = path.resolve(allowedRoot, relativePath);
+  if (!isWithinRoot(allowedRoot, resolved)) return null;
+
+  try {
+    const [actualRoot, actualFile] = await Promise.all([realpath(allowedRoot), realpath(resolved)]);
+    return isWithinRoot(actualRoot, actualFile) ? actualFile : null;
+  } catch {
+    return null;
+  }
 }
 
 async function startStaticServer() {
@@ -123,7 +146,7 @@ async function startStaticServer() {
       return;
     }
 
-    const filePath = safeRepositoryPath(request.url);
+    const filePath = await safeRepositoryPath(request.url);
     if (!filePath) {
       response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Not found");
@@ -581,8 +604,11 @@ async function runBrowserSmoke() {
   }
 }
 
-runBrowserSmoke().catch((error) => {
-  console.error(`Browser smoke: FAIL — ${error.message}`);
-  if (error.detail !== undefined) console.error(JSON.stringify(error.detail));
-  process.exitCode = 1;
-});
+const directEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (directEntry) {
+  runBrowserSmoke().catch((error) => {
+    console.error(`Browser smoke: FAIL — ${error.message}`);
+    if (error.detail !== undefined) console.error(JSON.stringify(error.detail));
+    process.exitCode = 1;
+  });
+}

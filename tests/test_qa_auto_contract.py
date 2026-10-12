@@ -1,5 +1,7 @@
 from pathlib import Path
+import json
 import re
+import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,8 +50,40 @@ class QaAutoContractTests(unittest.TestCase):
         self.assertIn('pathname.startsWith("/prototype/")', HARNESS)
         self.assertIn('pathname.startsWith("/src/")', HARNESS)
         self.assertIn("safeRepositoryPath", HARNESS)
+        self.assertIn("realpath(allowedRoot)", HARNESS)
         self.assertIn("Content-Security-Policy", HARNESS)
         self.assertNotIn("createReadStream(ROOT", HARNESS)
+
+        urls = [
+            "/prototype/",
+            "/src/ux-model.mjs",
+            "/AGENTS.md",
+            "/src/../AGENTS.md",
+            "/src/%2e%2e/AGENTS.md",
+            "/src/%2e%2e%2fAGENTS.md",
+            "/prototype/%2e%2e%2fAGENTS.md",
+            "/src/%252e%252e%252fAGENTS.md",
+            "/src/%2e%2e%2f.git%2fconfig",
+        ]
+        source = f"""
+import {{ safeRepositoryPath }} from './scripts/browser-smoke.mjs';
+const urls = {json.dumps(urls)};
+const results = await Promise.all(urls.map(async (url) => [url, await safeRepositoryPath(url)]));
+console.log(JSON.stringify(Object.fromEntries(results)));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", source],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resolved = json.loads(result.stdout)
+        self.assertTrue(resolved["/prototype/"].replace("\\", "/").endswith("/prototype/index.html"))
+        self.assertTrue(resolved["/src/ux-model.mjs"].replace("\\", "/").endswith("/src/ux-model.mjs"))
+        for url in urls[2:]:
+            self.assertIsNone(resolved[url], url)
 
     def test_required_viewports_states_and_rendered_assertions_are_encoded(self):
         for width in (320, 375, 768, 1440):
