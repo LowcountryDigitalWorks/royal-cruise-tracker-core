@@ -31,6 +31,8 @@ FORBIDDEN_TRANSPORT_FIELDS = {
     "transport_state",
 }
 
+RESERVED_REQUEST_FIELDS = {"contract_version", "action"}
+
 
 class NotificationIntentBridgeError(Exception):
     """Fail-closed exception raised when the notification-intent bridge fails."""
@@ -43,13 +45,17 @@ def _assert_no_forbidden_keys(value: Any, path: str = "value") -> None:
         return
     if isinstance(value, dict):
         for k, v in value.items():
+            if not isinstance(k, str):
+                raise NotificationIntentBridgeError(
+                    "Notification-intent state contains an invalid non-string field name"
+                )
             if FORBIDDEN_KEY_PATTERN.search(k):
                 raise NotificationIntentBridgeError(
-                    f"Forbidden private field '{path}.{k}' detected in notification-intent state or payload"
+                    "Forbidden private field detected in notification-intent state or payload"
                 )
-            if k in FORBIDDEN_TRANSPORT_FIELDS:
+            if k.lower() in FORBIDDEN_TRANSPORT_FIELDS:
                 raise NotificationIntentBridgeError(
-                    f"Transport state field '{path}.{k}' is forbidden in notification-intent semantics"
+                    "Transport state field is forbidden in notification-intent semantics"
                 )
             _assert_no_forbidden_keys(v, f"{path}.{k}")
 
@@ -96,12 +102,22 @@ def invoke_intent_cli(
     if not cli_path.exists():
         raise NotificationIntentBridgeError(f"Notification intent CLI file not found at {cli_path}")
 
+    if not isinstance(action, str) or not action.strip():
+        raise NotificationIntentBridgeError("Notification intent action is invalid")
+    if not isinstance(payload, dict):
+        raise NotificationIntentBridgeError("Notification intent payload must be a mapping")
+    if any(key in payload for key in RESERVED_REQUEST_FIELDS):
+        raise NotificationIntentBridgeError(
+            "Notification intent payload contains a reserved request envelope field"
+        )
+
     _assert_no_forbidden_keys(payload, "request_payload")
 
+    # Trusted envelope values are applied last so payload content can never override them.
     request_obj = {
+        **payload,
         "contract_version": INTENT_CONTRACT_VERSION,
         "action": action,
-        **payload,
     }
 
     try:
@@ -140,6 +156,9 @@ def invoke_intent_cli(
 
     if response.get("contract_version") != INTENT_CONTRACT_VERSION:
         raise NotificationIntentBridgeError("Contract version mismatch in Node CLI response")
+
+    if response.get("action") != action:
+        raise NotificationIntentBridgeError("Action mismatch in Node CLI response")
 
     if response.get("status") != "ok":
         raise NotificationIntentBridgeError("Node CLI response status is not 'ok'")
