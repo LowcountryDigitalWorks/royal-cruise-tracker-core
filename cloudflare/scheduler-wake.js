@@ -7,10 +7,14 @@ function dispatchError(code) {
   return error;
 }
 
-function requiredSecret(env) {
+function requiredDispatchToken(env) {
   const token = String(env?.GITHUB_ACTIONS_DISPATCH_TOKEN || '').trim();
   if (!token) throw dispatchError('scheduler_wake_secret_missing');
   return token;
+}
+
+function schedulerProofKey(env) {
+  return String(env?.SCHEDULER_TARGET_PROOF_KEY || '').trim();
 }
 
 export function scheduledTargetIso(controller) {
@@ -27,9 +31,9 @@ function hex(bytes) {
   return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
-export async function schedulerTargetProof(target, token) {
+export async function schedulerTargetProof(target, proofKey) {
   const normalizedTarget = String(target || '').trim();
-  const secret = String(token || '').trim();
+  const secret = String(proofKey || '').trim();
   if (!normalizedTarget || !secret) return '';
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -47,16 +51,18 @@ export async function dispatchScheduledRoyalWake(controller, env, fetcher = fetc
   if (cron !== expectedCron) throw dispatchError('scheduler_wake_unexpected_cron');
   if (!dispatchUrl.startsWith('https://api.github.com/repos/') || !dispatchUrl.endsWith('/dispatches')) throw dispatchError('scheduler_wake_dispatch_url_invalid');
 
-  const token = requiredSecret(env);
+  const token = requiredDispatchToken(env);
+  const proofKey = schedulerProofKey(env);
   const target = scheduledTargetIso(controller);
   const inputs = { scheduler_wake: 'true' };
   // scheduledTime is Cloudflare's authoritative UTC time for this Cron event. Sign
-  // that value with the existing dispatch secret so the GitHub workflow can tell a
-  // real Worker-originated target from a human/manual workflow_dispatch input. The
-  // proof is one-way and never exposes the dispatch token.
+  // that value only with the dedicated proof key so the GitHub workflow can tell a
+  // Worker-originated target from a human/manual workflow_dispatch input without
+  // coupling proof integrity to the GitHub bearer token. If the proof key is absent,
+  // dispatch still proceeds and GitHub safely falls back to due-gate telemetry.
   if (target) {
     inputs.scheduler_target_at = target;
-    inputs.scheduler_target_proof = await schedulerTargetProof(target, token);
+    inputs.scheduler_target_proof = await schedulerTargetProof(target, proofKey);
   }
 
   const response = await fetcher(dispatchUrl, {

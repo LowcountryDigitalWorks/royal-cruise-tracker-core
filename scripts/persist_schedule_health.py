@@ -4,7 +4,7 @@
 This helper makes no Royal request and is fail-open: scheduler telemetry can never
 block the Royal monitor. Persistence is explicit and applies only to the automatic
 Cloudflare scheduler wake. An exact target is trusted only when its HMAC proves it
-came from the Worker that holds the existing GitHub dispatch secret.
+came from the Worker that holds the dedicated scheduler proof secret.
 """
 from __future__ import annotations
 
@@ -42,6 +42,20 @@ def verified_exact_target(target_at: str, proof: str, key: str) -> bool:
     expected = target_proof(target_at, key)
     supplied = str(proof or "").strip().lower()
     return bool(expected and len(supplied) == 64 and hmac.compare_digest(expected, supplied))
+
+
+def select_target(exact_candidate: str, proof: str, proof_key: str, fallback_target: str) -> tuple[str, str, bool]:
+    """Select authenticated exact telemetry or the sanitized due-gate fallback.
+
+    A missing or invalid proof never authorizes the supplied exact target and never
+    raises a provider-facing failure. The monitor can continue using fallback timing.
+    """
+    exact_target = str(exact_candidate or "").strip()
+    fallback = str(fallback_target or "").strip()
+    exact = verified_exact_target(exact_target, proof, proof_key)
+    if exact:
+        return exact_target, EXACT_TARGET_SOURCE, True
+    return fallback, FALLBACK_TARGET_SOURCE, False
 
 
 def normalize_health(value: str) -> str:
@@ -134,19 +148,18 @@ def main() -> int:
         print("Scheduler health D1 persistence: skipped non-automatic dispatch")
         return 0
 
-    exact_candidate = os.environ.get("ROYAL_EXACT_TARGET_AT", "").strip()
+    exact_candidate = os.environ.get("ROYAL_EXACT_TARGET_AT", "")
     proof = os.environ.get("ROYAL_TARGET_PROOF", "")
     proof_key = os.environ.get("ROYAL_TARGET_PROOF_KEY", "")
-    fallback_target = os.environ.get("ROYAL_FALLBACK_TARGET_AT", "").strip()
-    exact = verified_exact_target(exact_candidate, proof, proof_key)
-    if exact:
-        selected_target = exact_candidate
-        target_source = EXACT_TARGET_SOURCE
-    else:
-        selected_target = fallback_target
-        target_source = FALLBACK_TARGET_SOURCE
-        if exact_candidate:
-            print("::warning::Scheduler exact-target proof unavailable or invalid; using due-gate fallback telemetry")
+    fallback_target = os.environ.get("ROYAL_FALLBACK_TARGET_AT", "")
+    selected_target, target_source, exact = select_target(
+        exact_candidate,
+        proof,
+        proof_key,
+        fallback_target,
+    )
+    if not exact and str(exact_candidate or "").strip():
+        print("::warning::Scheduler exact-target proof unavailable or invalid; using due-gate fallback telemetry")
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "unknown")
     run_attempt = int(os.environ.get("GITHUB_RUN_ATTEMPT", "1") or "1")
