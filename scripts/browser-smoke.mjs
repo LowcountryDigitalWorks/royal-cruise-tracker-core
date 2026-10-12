@@ -101,9 +101,11 @@ async function launchChrome(cdpPort) {
   const chromeProc = spawn(chromeBin, [
     "--headless=new",
     `--remote-debugging-port=${cdpPort}`,
+    "--remote-debugging-address=127.0.0.1",
     "--no-sandbox",
     "--disable-gpu",
     "--disable-dev-shm-usage",
+    "--disable-software-rasterizer",
     `--user-data-dir=${tmpDir}`,
   ], { stdio: ["ignore", "ignore", "pipe"] });
 
@@ -111,8 +113,8 @@ async function launchChrome(cdpPort) {
   chromeProc.stderr.on("data", (chunk) => { errLogs += chunk.toString(); });
 
   let connected = false;
-  for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 200));
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 250));
     try {
       const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
       if (res.ok) {
@@ -191,6 +193,20 @@ class CDPClient {
     return res.result.value;
   }
 
+  async navigate(url) {
+    return new Promise(async (resolve) => {
+      const handler = (evt) => {
+        const msg = JSON.parse(evt.data);
+        if (msg.method === "Page.loadEventFired") {
+          this.ws.removeEventListener("message", handler);
+          resolve();
+        }
+      };
+      this.ws.addEventListener("message", handler);
+      await this.send("Page.navigate", { url });
+    });
+  }
+
   close() {
     try { this.ws.close(); } catch {}
   }
@@ -231,8 +247,7 @@ async function runSmokeHarness() {
           mobile: vp.width < 768,
         });
 
-        await cdp.send("Page.navigate", { url: scenarioUrl });
-        await new Promise((r) => setTimeout(r, 250));
+        await cdp.navigate(scenarioUrl);
 
         if (cdp.uncaughtErrors.length > 0) {
           throw new Error(`Uncaught JS exception on ${scenarioUrl}: ${cdp.uncaughtErrors.join("\n")}`);
@@ -275,8 +290,7 @@ async function runSmokeHarness() {
     // 2. Keyboard / Focus Navigation Tests
     console.log("\n--- Executing Keyboard / Focus Navigation Tests ---");
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
-    await cdp.send("Page.navigate", { url: `${baseUrl}?scenario=case-05-drop` });
-    await new Promise((r) => setTimeout(r, 250));
+    await cdp.navigate(`${baseUrl}?scenario=case-05-drop`);
 
     // Tab 1: Skip link
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
@@ -351,8 +365,7 @@ async function runSmokeHarness() {
 
     // 3. Zoom / Text Scale Tests
     console.log("\n--- Executing Zoom / Text Scale (~200%) Tests ---");
-    await cdp.send("Page.navigate", { url: `${baseUrl}?scenario=case-05-drop` });
-    await new Promise((r) => setTimeout(r, 250));
+    await cdp.navigate(`${baseUrl}?scenario=case-05-drop`);
 
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 1280,
