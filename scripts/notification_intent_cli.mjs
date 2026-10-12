@@ -58,7 +58,9 @@ function main() {
     }
 
     if (request.contract_version !== INTENT_CONTRACT_VERSION) {
-      exitWithError("Contract version mismatch");
+      exitWithError(
+        `Contract version mismatch: expected '${INTENT_CONTRACT_VERSION}', got '${request.contract_version}'`,
+      );
       return;
     }
 
@@ -78,11 +80,12 @@ function main() {
         const intent = request.intent ?? null;
         result = safeIntentPayload(intent);
       } else {
-        exitWithError("Unrecognized action");
+        exitWithError(`Unrecognized action '${action}'`);
         return;
       }
-    } catch {
-      exitWithError("Semantic execution failed");
+    } catch (err) {
+      const errMessage = err && err.message ? String(err.message) : "Semantic execution failed";
+      exitWithError(errMessage);
       return;
     }
 

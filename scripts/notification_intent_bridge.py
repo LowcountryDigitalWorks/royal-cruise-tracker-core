@@ -54,34 +54,6 @@ def _assert_no_forbidden_keys(value: Any, path: str = "value") -> None:
             _assert_no_forbidden_keys(v, f"{path}.{k}")
 
 
-def _parse_cli_stdout(stdout: bytes) -> dict[str, Any]:
-    """Parse the exact one-line JSON stdout contract emitted by the Node adapter."""
-    try:
-        stdout_str = stdout.decode("utf-8")
-    except UnicodeDecodeError as err:
-        raise NotificationIntentBridgeError("Node CLI stdout output is not valid UTF-8") from err
-
-    if not stdout_str.endswith("\n") or stdout_str.count("\n") != 1:
-        raise NotificationIntentBridgeError(
-            "Unexpected stdout framing from Node CLI: expected exactly 1 JSON response line"
-        )
-
-    json_line = stdout_str[:-1]
-    if not json_line or json_line != json_line.strip():
-        raise NotificationIntentBridgeError(
-            "Unexpected stdout framing from Node CLI: expected exactly 1 JSON response line"
-        )
-
-    try:
-        response = json.loads(json_line)
-    except Exception as exc:
-        raise NotificationIntentBridgeError("Node CLI stdout output is not valid JSON") from exc
-
-    if not isinstance(response, dict):
-        raise NotificationIntentBridgeError("Node CLI output is not a JSON object")
-    return response
-
-
 def invoke_intent_cli(
     action: str,
     payload: dict[str, Any],
@@ -132,17 +104,33 @@ def invoke_intent_cli(
         ) from err
 
     if proc.returncode != 0:
-        raise NotificationIntentBridgeError(
-            f"Node CLI execution failed closed with exit code {proc.returncode}"
-        )
+        stderr_msg = proc.stderr.decode("utf-8", errors="replace").strip() or f"Process exited with code {proc.returncode}"
+        raise NotificationIntentBridgeError(f"Node CLI execution failed closed: {stderr_msg}")
 
-    response = _parse_cli_stdout(proc.stdout)
+    stdout_str = proc.stdout.decode("utf-8")
+
+    # Framing validation: stdout must be non-empty and have standard single-line/delimited JSON framing
+    lines = [line for line in stdout_str.split("\n") if line.strip()]
+    if len(lines) != 1:
+        raise NotificationIntentBridgeError("Unexpected stdout framing from Node CLI: expected exactly 1 JSON response line")
+
+    try:
+        response = json.loads(lines[0])
+    except Exception as exc:
+        raise NotificationIntentBridgeError(f"Node CLI stdout output is not valid JSON: {exc}") from exc
+
+    if not isinstance(response, dict):
+        raise NotificationIntentBridgeError("Node CLI output is not a JSON object")
 
     if response.get("contract_version") != INTENT_CONTRACT_VERSION:
-        raise NotificationIntentBridgeError("Contract version mismatch in Node CLI response")
+        raise NotificationIntentBridgeError(
+            f"Contract version mismatch in Node CLI response: got '{response.get('contract_version')}'"
+        )
 
     if response.get("status") != "ok":
-        raise NotificationIntentBridgeError("Node CLI response status is not 'ok'")
+        raise NotificationIntentBridgeError(
+            f"Node CLI response status is not 'ok': got '{response.get('status')}'"
+        )
 
     if "result" not in response:
         raise NotificationIntentBridgeError("Node CLI response missing required 'result' field")
