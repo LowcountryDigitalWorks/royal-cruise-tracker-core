@@ -105,6 +105,7 @@ def reconstruct_price_candidates(
             spec = base.SPEC_BY_ID.get(product_id)
             if spec is None or role not in getattr(spec, "audience", ()):
                 continue
+            # First personalized observation establishes the baseline and was never an alert.
             if prior_min is None or current >= prior_min - EPSILON:
                 continue
             meaningful, savings = adaptive.meaningful_drop(profile, prior_min, current, spec.prefix)
@@ -305,6 +306,8 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
         }])
         availability_rows = (availability_result[0].get("results") or []) if availability_result else []
     except Exception:
+        # A missing optional availability table means there is no retained restock
+        # transition to replay. Other replay classes remain available.
         availability_rows = []
 
     candidates.extend(reconstruct_availability_candidates(availability_rows, base))

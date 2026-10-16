@@ -28,22 +28,19 @@ class PriceCheckScheduleContractTests(unittest.TestCase):
         self.assertNotIn("SECONDARY_WATCHLIST_JSON", provider_block)
 
     def test_sparse_checkout_contains_public_core_dependencies(self):
-        for required in (
-            "cloudflare/scheduler-wake.js",
-            "config/demo-profile.json",
-            "scripts/runtime_profile.py",
-            "scripts/royal_check_due.py",
-            "scripts/run_tracker_adaptive_v5.py",
-            "scripts/notification_delivery_runtime.py",
-            "scripts/notification_replay.py",
-            "scripts/notification_replay_legacy.py",
-            "scripts/notification_replay_store.py",
-            "scripts/notification_intent_bridge.py",
-            "scripts/notification_intent_cli.mjs",
-            "src/notification-intent.mjs",
-            "tests/test_sec_001a_contract.py",
-        ):
-            self.assertIn(required, WORKFLOW)
+        self.assertIn("cloudflare/scheduler-wake.js", WORKFLOW)
+        self.assertIn("config/demo-profile.json", WORKFLOW)
+        self.assertIn("scripts/runtime_profile.py", WORKFLOW)
+        self.assertIn("scripts/royal_check_due.py", WORKFLOW)
+        self.assertIn("scripts/run_tracker_adaptive_v5.py", WORKFLOW)
+        self.assertIn("scripts/notification_delivery_runtime.py", WORKFLOW)
+        self.assertIn("scripts/notification_replay.py", WORKFLOW)
+        self.assertIn("scripts/notification_replay_legacy.py", WORKFLOW)
+        self.assertIn("scripts/notification_replay_store.py", WORKFLOW)
+        self.assertIn("scripts/notification_intent_bridge.py", WORKFLOW)
+        self.assertIn("scripts/notification_intent_cli.mjs", WORKFLOW)
+        self.assertIn("src/notification-intent.mjs", WORKFLOW)
+        self.assertIn("tests/test_sec_001a_contract.py", WORKFLOW)
 
     def test_due_gate_runs_before_docker_or_royal(self):
         preflight = WORKFLOW.index("python3 scripts/runtime_profile.py")

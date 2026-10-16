@@ -114,7 +114,7 @@ def _semantic_generation(alert: dict[str, Any], observed_at: str) -> str:
     if kind == "watch_initial_good":
         target = _safe_float(alert.get("target"))
         if target is None:
-            raise ValueError("target alert requires target")
+            return f"target:0.000000"
         return f"target:{target:.6f}"
     if current is None:
         raise ValueError("price alert requires current value")
@@ -133,19 +133,8 @@ def intent_from_alert(alert: dict[str, Any], observed_at: str, base: Any) -> dic
         "availability_return": "availability_restored",
     }[kind]
 
-    policy_key = {
-        "fare": "fare_new_low",
-        "watch_new_low": "watch_new_low",
-        "purchase_reprice": "purchase_reprice",
-        "availability_return": "availability_restored",
-    }.get(kind)
-    if kind == "watch_initial_good":
-        target = _safe_float(alert.get("target"))
-        if target is None:
-            raise ValueError("target alert requires target")
-        policy_key = f"target:{target:.6f}"
-    if policy_key is None:
-        raise ValueError(f"unsupported alert kind for policy identity: {kind}")
+    target_val = _safe_float(alert.get("target"))
+    target_key = f"target:{target_val:.6f}" if target_val is not None else "watch_initial_good"
 
     payload: dict[str, Any] = {
         "subject_key": subject_key,
@@ -172,7 +161,13 @@ def intent_from_alert(alert: dict[str, Any], observed_at: str, base: Any) -> dic
             if event_type == "availability_restored"
             else "verify_current_price"
         ),
-        "policy_key": policy_key,
+        "policy_key": {
+            "fare": "fare_new_low",
+            "watch_new_low": "watch_new_low",
+            "watch_initial_good": target_key,
+            "purchase_reprice": "purchase_reprice",
+            "availability_return": "availability_restored",
+        }[kind],
     }
     savings = _safe_float(alert.get("savings"))
     if savings is not None:
