@@ -62,6 +62,11 @@ def _assert_no_forbidden_keys(value: Any, path: str = "value") -> None:
 
 def _parse_cli_stdout(stdout: bytes) -> dict[str, Any]:
     """Parse the exact one-line JSON stdout contract emitted by the Node adapter."""
+    if b"\r" in stdout:
+        raise NotificationIntentBridgeError(
+            "Unexpected stdout framing from Node CLI: carriage return is not allowed"
+        )
+
     try:
         stdout_str = stdout.decode("utf-8")
     except UnicodeDecodeError as err:

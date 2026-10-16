@@ -81,6 +81,7 @@ class NotificationIntentBridgeHardeningTests(unittest.TestCase):
         bad_outputs = [
             b"\n" + response + b"\n",
             response + b"\n\n",
+            response + b"\r\n",
             response + b"\nEXTRA\n",
             response,
         ]
