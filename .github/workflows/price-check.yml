@@ -46,8 +46,6 @@ permissions:
 
 concurrency:
   group: royal-cruise-price-check
-  # Serialize duplicate Cloudflare wakes. Never cancel a Royal run after it may have
-  # started; a queued duplicate re-checks D1 and skips once the target is satisfied.
   cancel-in-progress: false
 
 jobs:
@@ -62,7 +60,6 @@ jobs:
       SCAN_GROUP: ${{ inputs.scan_group || 'auto' }}
       PROMOTION_CATALOG_FORCE: ${{ inputs.promotion_catalog || 'false' }}
       ROYAL_SCHEDULER_WAKE: ${{ inputs.scheduler_wake || 'false' }}
-
 
     steps:
       - name: Checkout tracker runner and due-gate only
@@ -81,6 +78,9 @@ jobs:
             scripts/run_tracker_adaptive_v4.py
             scripts/run_tracker_adaptive_v5.py
             scripts/notification_delivery_runtime.py
+            scripts/notification_replay.py
+            scripts/notification_replay_legacy.py
+            scripts/notification_replay_store.py
             scripts/notification_intent_bridge.py
             scripts/notification_intent_cli.mjs
             scripts/royal_check_due.py
