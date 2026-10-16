@@ -2,6 +2,9 @@ import {
   INTENT_CONTRACT_VERSION,
   deriveIntents,
   groupIntents,
+  recordDeliveryAttempt,
+  reconcileNotificationIntents,
+  safeIntentLifecycleRecord,
   safeIntentPayload,
 } from "../src/notification-intent.mjs";
 
@@ -77,6 +80,26 @@ function main() {
       } else if (action === "safeIntentPayload" || action === "safe_intent_payload") {
         const intent = request.intent ?? null;
         result = safeIntentPayload(intent);
+      } else if (action === "reconcileIntents" || action === "reconcile_intents") {
+        const existingRecords = request.existing_records ?? request.existingRecords ?? [];
+        const currentState = request.current_state ?? request.currentState ?? null;
+        const previousState = request.previous_state ?? request.previousState ?? null;
+        const policy = request.policy ?? {};
+        const timestamp = request.timestamp ?? null;
+        result = reconcileNotificationIntents({
+          existingRecords,
+          currentState,
+          previousState,
+          policy,
+          timestamp,
+        });
+      } else if (action === "safeIntentLifecycleRecord" || action === "safe_intent_lifecycle_record") {
+        const record = request.record ?? null;
+        result = safeIntentLifecycleRecord(record);
+      } else if (action === "recordDeliveryAttempt" || action === "record_delivery_attempt") {
+        const records = request.records ?? [];
+        const deliveryResult = request.delivery_result ?? request.deliveryResult ?? {};
+        result = recordDeliveryAttempt(records, deliveryResult);
       } else {
         exitWithError("Unrecognized action");
         return;

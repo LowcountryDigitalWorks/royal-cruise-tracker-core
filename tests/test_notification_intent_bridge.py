@@ -19,6 +19,9 @@ from notification_intent_bridge import (
     group_intents,
     invoke_intent_cli,
     map_observation_to_semantic_state,
+    record_delivery_attempt,
+    reconcile_intents,
+    safe_intent_lifecycle_record,
     safe_intent_payload,
 )
 
@@ -242,6 +245,51 @@ class NotificationIntentBridgeTests(unittest.TestCase):
         proc1 = subprocess.run(["node", str(cli_path)], input=input_bytes, capture_output=True)
         proc2 = subprocess.run(["node", str(cli_path)], input=input_bytes, capture_output=True)
         self.assertEqual(proc1.stdout, proc2.stdout)
+
+    def test_reconcile_intents_lifecycle_and_retry(self):
+        p1 = sample_state(current_value=100.0)
+        c1 = sample_state(current_value=90.0, price_generation="p90", observed_at="2030-01-02T12:00:00Z")
+        policy = {"meaningful_drop": {"enabled": True, "absolute_threshold": 5, "combine": "ANY"}}
+
+        reconciled1 = reconcile_intents([], c1, policy, previous_state=p1)
+        self.assertEqual(len(reconciled1), 1)
+        self.assertEqual(reconciled1[0]["delivery_state"], "pending")
+
+        failed_attempt = record_delivery_attempt(reconciled1, {"status": "failed", "timestamp": "2030-01-02T12:01:00Z"})
+        self.assertEqual(failed_attempt[0]["delivery_state"], "failed")
+        self.assertEqual(failed_attempt[0]["attempt_count"], 1)
+
+        c2 = sample_state(current_value=90.0, price_generation="p90", observed_at="2030-01-02T13:00:00Z")
+        retry_reconciled = reconcile_intents(failed_attempt, c2, policy, previous_state=c1)
+        self.assertEqual(len(retry_reconciled), 1)
+        self.assertEqual(retry_reconciled[0]["delivery_state"], "failed")
+
+        delivered = record_delivery_attempt(retry_reconciled, {"status": "delivered", "timestamp": "2030-01-02T13:01:00Z"})
+        self.assertEqual(delivered[0]["delivery_state"], "delivered")
+        self.assertEqual(delivered[0]["delivered_at"], "2030-01-02T13:01:00Z")
+
+    def test_reconcile_intents_supersedes_when_price_rises(self):
+        p1 = sample_state(current_value=100.0)
+        c1 = sample_state(current_value=90.0, price_generation="p90", observed_at="2030-01-02T12:00:00Z")
+        policy = {"meaningful_drop": {"enabled": True, "absolute_threshold": 5, "combine": "ANY"}}
+
+        reconciled1 = reconcile_intents([], c1, policy, previous_state=p1)
+        failed_attempt = record_delivery_attempt(reconciled1, {"status": "failed", "timestamp": "2030-01-02T12:01:00Z"})
+
+        c2 = sample_state(current_value=110.0, price_generation="p110", observed_at="2030-01-02T13:00:00Z")
+        superseded = reconcile_intents(failed_attempt, c2, policy, timestamp="2030-01-02T13:00:00Z", previous_state=c1)
+
+        self.assertEqual(len(superseded), 1)
+        self.assertEqual(superseded[0]["delivery_state"], "superseded")
+        self.assertEqual(superseded[0]["superseded_reason"], "price_increased")
+
+    def test_safe_intent_lifecycle_record_and_forbidden_fields(self):
+        valid = safe_intent_lifecycle_record({"subject_key": "subject:x", "event_type": "target_hit", "semantic_generation": "g1"})
+        self.assertEqual(valid["delivery_state"], "pending")
+        self.assertEqual(valid["attempt_count"], 0)
+
+        with self.assertRaises(NotificationIntentBridgeError):
+            safe_intent_lifecycle_record({"subject_key": "subject:x", "event_type": "target_hit", "semantic_generation": "g1", "apprise_url": "https://forbidden.com"})
 
 
 if __name__ == "__main__":

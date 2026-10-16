@@ -100,20 +100,39 @@ Meaningful-drop and any-change modes may specify:
 
 An epsilon suppresses meaningless numeric wobble. Any-change direction is explicitly `DOWN` or `BOTH` in this release.
 
-## Delivery-state non-scope
+## Delivery-state lifecycle and retry semantics (ALERT-REL-001)
 
-ALERT-001A has no persisted states such as:
+ALERT-REL-001 introduces durable notification intent lifecycle and delivery state management decoupleable from raw observation history.
 
-- pending;
-- delivered;
-- retryable;
-- superseded;
-- attempt count;
-- delivery acknowledgement timestamp.
+### Conceptual delivery states
 
-Those belong to ALERT-REL-001 (#15), after this pure semantic identity contract is independently accepted.
+- `pending`: derived semantic intent awaiting successful transport acknowledgment.
+- `delivered`: successfully delivered and acknowledged transport state.
+- `failed`: delivery attempt failed; intent remains retryable while actionable.
+- `superseded`: event is no longer actionable under current observation evidence before retry (e.g. price increased, item became unavailable, target exceeded, observation recovered, or scope changed).
 
-`SUPPRESS_ALERTS`/proof mode is a delivery policy and must not be represented as a production delivery failure.
+### Pure lifecycle functions
+
+#### `safeIntentLifecycleRecord(record)`
+
+Sanitizes and returns an allowlisted intent lifecycle record with explicit tracking fields (`delivery_state`, `attempt_count`, `last_attempt_at`, `delivered_at`, `superseded_at`, `superseded_reason`).
+
+#### `reconcileNotificationIntents({ existingRecords, currentState, previousState, policy, timestamp })`
+
+Evaluates existing pending/failed intent records against current observation evidence:
+
+- **Price drops / new lows**: remain `pending` when current observation is $ \le $ original drop price. If price increases above original drop price, intent transitions to `superseded` (`price_increased`).
+- **Restocks**: remain `pending` while item stays `available`. If item becomes `unavailable`, intent transitions to `superseded` (`became_unavailable`).
+- **Target hits**: remain `pending` while target is `reached`. If state becomes `above`, transitions to `superseded` (`target_exceeded`).
+- **Observation failures**: remain `pending` while freshness is `failed`. On fresh observation, transitions to `superseded` (`observation_recovered`).
+- **Scope mismatch**: transitions to `superseded` (`scope_changed`).
+- **Provider / observation failures**: do not supersede price or availability intents.
+
+Newly derived intents are merged and deduplicated by deterministic fingerprint (`intent_id`). Delivered, pending, or superseded records are preserved.
+
+#### `recordDeliveryAttempt(records, attemptResult)`
+
+Updates records following transport attempt (`status`: `delivered`, `failed`, or `suppressed`). `suppressed` / proof mode alerts are treated as acknowledged policy decisions rather than transport failures.
 
 ## Compatibility
 

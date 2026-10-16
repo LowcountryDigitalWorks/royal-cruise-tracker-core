@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  DELIVERY_STATES,
   INTENT_CONTRACT_VERSION,
   deriveIntents,
   groupIntents,
   intentFingerprint,
+  recordDeliveryAttempt,
+  reconcileNotificationIntents,
+  safeIntentLifecycleRecord,
   safeIntentPayload,
 } from "../src/notification-intent.mjs";
 
@@ -440,5 +444,155 @@ test("semantic module contains no environment, network, filesystem, clock, or ra
   const source = readFileSync(new URL("../src/notification-intent.mjs", import.meta.url), "utf8");
   for (const forbidden of ["process.env", "fetch(", "WebSocket", "node:fs", "Date.now", "new Date(", "Math.random"]){
     assert.equal(source.includes(forbidden), false, `semantic module unexpectedly contains ${forbidden}`);
+  }
+});
+
+test("safeIntentLifecycleRecord validates lifecycle fields and rejects forbidden private keys", () => {
+  const valid = safeIntentLifecycleRecord({
+    subject_key: "subject:x",
+    event_type: "target_hit",
+    semantic_generation: "g1",
+  });
+  assert.equal(valid.delivery_state, "pending");
+  assert.equal(valid.attempt_count, 0);
+  assert.equal(valid.last_attempt_at, null);
+  assert.equal(valid.delivered_at, null);
+  assert.equal(valid.superseded_at, null);
+
+  assert.throws(() => safeIntentLifecycleRecord({
+    subject_key: "subject:x",
+    event_type: "target_hit",
+    semantic_generation: "g1",
+    delivery_state: "invalid_state",
+  }), /invalid delivery_state/);
+
+  assert.throws(() => safeIntentLifecycleRecord({
+    subject_key: "subject:x",
+    event_type: "target_hit",
+    semantic_generation: "g1",
+    apprise_url: "https://synthetic.forbidden",
+  }), /Forbidden private field/);
+});
+
+test("ALERT-REL-001 matrix 1 & 2: new-low intent delivery success vs failure", () => {
+  const previous = state({ current_value: 100, historical_low: 100 });
+  const current = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const policy = { new_low: { enabled: true } };
+
+  const reconciled = reconcileNotificationIntents({ existingRecords: [], currentState: current, previousState: previous, policy });
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].delivery_state, "pending");
+  assert.equal(reconciled[0].event_type, "new_low");
+
+  const success = recordDeliveryAttempt(reconciled, { status: "delivered", timestamp: "2030-01-02T12:05:00Z" });
+  assert.equal(success[0].delivery_state, "delivered");
+  assert.equal(success[0].delivered_at, "2030-01-02T12:05:00Z");
+
+  const failure = recordDeliveryAttempt(reconciled, { status: "failed", timestamp: "2030-01-02T12:05:00Z" });
+  assert.equal(failure[0].delivery_state, "failed");
+  assert.equal(failure[0].attempt_count, 1);
+});
+
+test("ALERT-REL-001 matrix 3, 4, 5: same price next run keeps pending intent retryable without duplicates", () => {
+  const p1 = state({ current_value: 100, historical_low: 100 });
+  const c1 = state({ current_value: 90, historical_low: 90, price_generation: "90", observed_at: "2030-01-02T12:00:00Z" });
+  const policy = { new_low: { enabled: true } };
+
+  const initial = reconcileNotificationIntents({ existingRecords: [], currentState: c1, previousState: p1, policy });
+  const failedAttempt = recordDeliveryAttempt(initial, { status: "failed", timestamp: "2030-01-02T12:01:00Z" });
+
+  const c2 = state({ current_value: 90, historical_low: 90, price_generation: "90", observed_at: "2030-01-02T13:00:00Z" });
+  const rawDerivedNextRun = deriveIntents(c1, c2, policy);
+  assert.equal(rawDerivedNextRun.length, 0);
+
+  const retryReconciled = reconcileNotificationIntents({ existingRecords: failedAttempt, currentState: c2, previousState: c1, policy });
+  assert.equal(retryReconciled.length, 1);
+  assert.equal(retryReconciled[0].delivery_state, "failed");
+  assert.equal(retryReconciled[0].intent_id, failedAttempt[0].intent_id);
+
+  const retrySuccess = recordDeliveryAttempt(retryReconciled, { status: "delivered", timestamp: "2030-01-02T13:02:00Z" });
+  assert.equal(retrySuccess[0].delivery_state, "delivered");
+
+  const c3 = state({ current_value: 90, historical_low: 90, price_generation: "90", observed_at: "2030-01-02T14:00:00Z" });
+  const run3Reconciled = reconcileNotificationIntents({ existingRecords: retrySuccess, currentState: c3, previousState: c2, policy });
+  assert.equal(run3Reconciled.length, 1);
+  assert.equal(run3Reconciled[0].delivery_state, "delivered");
+});
+
+test("ALERT-REL-001 matrix 6: price rises before retry supersedes pending drop intent", () => {
+  const p1 = state({ current_value: 100 });
+  const c1 = state({ current_value: 90, price_generation: "90" });
+  const policy = DROP_ANY;
+
+  const initial = reconcileNotificationIntents({ existingRecords: [], currentState: c1, previousState: p1, policy });
+  const failedAttempt = recordDeliveryAttempt(initial, { status: "failed", timestamp: "2030-01-02T12:01:00Z" });
+
+  const c2 = state({ current_value: 110, price_generation: "110", observed_at: "2030-01-02T13:00:00Z" });
+  const reconciled = reconcileNotificationIntents({ existingRecords: failedAttempt, currentState: c2, previousState: c1, policy, timestamp: "2030-01-02T13:00:00Z" });
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].delivery_state, "superseded");
+  assert.equal(reconciled[0].superseded_reason, "price_increased");
+  assert.equal(reconciled[0].superseded_at, "2030-01-02T13:00:00Z");
+});
+
+test("ALERT-REL-001 matrix 7 & 8: restock intent retry and superseding", () => {
+  const p1 = state({ availability_state: "unavailable", freshness: "fresh" });
+  const c1 = state({ availability_state: "available", freshness: "fresh", availability_generation: "r1" });
+  const policy = { availability: { enabled: true } };
+
+  const initial = reconcileNotificationIntents({ existingRecords: [], currentState: c1, previousState: p1, policy });
+  const failedAttempt = recordDeliveryAttempt(initial, { status: "failed", timestamp: "2030-01-02T12:01:00Z" });
+
+  const c2 = state({ availability_state: "available", freshness: "fresh", availability_generation: "r1" });
+  assert.equal(deriveIntents(c1, c2, policy).length, 0);
+
+  const retryReconciled = reconcileNotificationIntents({ existingRecords: failedAttempt, currentState: c2, previousState: c1, policy });
+  assert.equal(retryReconciled.length, 1);
+  assert.equal(retryReconciled[0].delivery_state, "failed");
+
+  const c3 = state({ availability_state: "unavailable", freshness: "fresh" });
+  const supersededReconciled = reconcileNotificationIntents({ existingRecords: failedAttempt, currentState: c3, previousState: c2, policy, timestamp: "2030-01-02T14:00:00Z" });
+  assert.equal(supersededReconciled.length, 1);
+  assert.equal(supersededReconciled[0].delivery_state, "superseded");
+  assert.equal(supersededReconciled[0].superseded_reason, "became_unavailable");
+});
+
+test("ALERT-REL-001 matrix 9: provider failure is distinct from notification delivery failure", () => {
+  const p1 = state({ current_value: 100 });
+  const c1 = state({ current_value: 90, price_generation: "90" });
+  const policy = DROP_ANY;
+
+  const initial = reconcileNotificationIntents({ existingRecords: [], currentState: c1, previousState: p1, policy });
+  const failedAttempt = recordDeliveryAttempt(initial, { status: "failed", timestamp: "2030-01-02T12:01:00Z" });
+
+  const c2 = state({ freshness: "failed", comparable: false, current_value: null });
+  const reconciled = reconcileNotificationIntents({ existingRecords: failedAttempt, currentState: c2, previousState: c1, policy });
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].delivery_state, "failed");
+});
+
+test("ALERT-REL-001 matrix 11: suppressed/proof-mode alerts are treated as policy decisions not transport failures", () => {
+  const p1 = state({ current_value: 100 });
+  const c1 = state({ current_value: 90, price_generation: "90" });
+  const policy = DROP_ANY;
+
+  const initial = reconcileNotificationIntents({ existingRecords: [], currentState: c1, previousState: p1, policy });
+  const result = recordDeliveryAttempt(initial, { status: "suppressed", timestamp: "2030-01-02T12:01:00Z", reason: "proof_mode" });
+
+  assert.equal(result[0].delivery_state, "delivered");
+  assert.equal(result[0].superseded_reason, "proof_mode");
+});
+
+test("ALERT-REL-001 matrix 12: lifecycle records strictly reject forbidden sensitive fields", () => {
+  for (const forbidden of ["reservation_id", "booking_id", "apprise_url", "passenger_name", "payment_card"]) {
+    assert.throws(() => safeIntentLifecycleRecord({
+      subject_key: "subject:x",
+      event_type: "target_hit",
+      semantic_generation: "g1",
+      delivery_state: "pending",
+      [forbidden]: "sensitive_data",
+    }), /Forbidden private field/);
   }
 });

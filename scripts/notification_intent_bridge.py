@@ -22,15 +22,6 @@ FORBIDDEN_KEY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-FORBIDDEN_TRANSPORT_FIELDS = {
-    "pending",
-    "delivered",
-    "retry_count",
-    "last_attempt_at",
-    "delivered_at",
-    "transport_state",
-}
-
 RESERVED_REQUEST_FIELDS = {"contract_version", "action"}
 
 
@@ -52,10 +43,6 @@ def _assert_no_forbidden_keys(value: Any, path: str = "value") -> None:
             if FORBIDDEN_KEY_PATTERN.search(k):
                 raise NotificationIntentBridgeError(
                     "Forbidden private field detected in notification-intent state or payload"
-                )
-            if k.lower() in FORBIDDEN_TRANSPORT_FIELDS:
-                raise NotificationIntentBridgeError(
-                    "Transport state field is forbidden in notification-intent semantics"
                 )
             _assert_no_forbidden_keys(v, f"{path}.{k}")
 
@@ -214,6 +201,53 @@ def safe_intent_payload(
     """Validate and produce allowlisted notification intent payload via Node bridge."""
     payload = {"intent": intent}
     return invoke_intent_cli("safeIntentPayload", payload, timeout=timeout, node_path=node_path)
+
+
+def reconcile_intents(
+    existing_records: list[dict[str, Any]],
+    current_state: dict[str, Any],
+    policy: dict[str, Any] | None = None,
+    timestamp: str | None = None,
+    previous_state: dict[str, Any] | None = None,
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Reconcile and evaluate notification intent records against current observation via Node bridge."""
+    payload = {
+        "existing_records": existing_records,
+        "current_state": current_state,
+        "previous_state": previous_state,
+        "policy": policy or {},
+        "timestamp": timestamp,
+    }
+    return invoke_intent_cli("reconcileIntents", payload, timeout=timeout, node_path=node_path)
+
+
+def safe_intent_lifecycle_record(
+    record: dict[str, Any],
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> dict[str, Any]:
+    """Validate and sanitize a notification intent lifecycle record via Node bridge."""
+    payload = {"record": record}
+    return invoke_intent_cli("safeIntentLifecycleRecord", payload, timeout=timeout, node_path=node_path)
+
+
+def record_delivery_attempt(
+    records: list[dict[str, Any]] | dict[str, Any],
+    delivery_result: dict[str, Any],
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Update intent delivery state following a transport attempt via Node bridge."""
+    payload = {
+        "records": records if isinstance(records, list) else [records],
+        "delivery_result": delivery_result,
+    }
+    return invoke_intent_cli("recordDeliveryAttempt", payload, timeout=timeout, node_path=node_path)
 
 
 def map_observation_to_semantic_state(

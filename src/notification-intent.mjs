@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const INTENT_CONTRACT_VERSION = "alert-intent/v1";
+export const DELIVERY_STATES = Object.freeze(["pending", "delivered", "failed", "superseded"]);
 
 const SAFE_FIELDS = Object.freeze([
   "intent_id",
@@ -426,4 +427,194 @@ export function groupIntents(intents) {
       intents: group.intents,
     }));
   return deepFreeze(result);
+}
+
+export function safeIntentLifecycleRecord(record) {
+  if (!isRecord(record)) throw new TypeError("record must be an object");
+  assertNoForbiddenKeys(record, "record");
+
+  const intentSource = isRecord(record.intent) ? record.intent : record;
+  const safeIntent = safeIntentPayload(intentSource);
+
+  const deliveryState = optionalString(record.delivery_state, "pending").toLowerCase();
+  if (!DELIVERY_STATES.includes(deliveryState)) {
+    throw new TypeError(`invalid delivery_state: ${deliveryState}`);
+  }
+
+  const attemptCount = record.attempt_count === undefined || record.attempt_count === null ? 0 : Math.trunc(Number(record.attempt_count));
+  if (!Number.isInteger(attemptCount) || attemptCount < 0) {
+    throw new TypeError("attempt_count must be a non-negative integer");
+  }
+
+  const lastAttemptAt = optionalString(record.last_attempt_at, null);
+  const deliveredAt = optionalString(record.delivered_at, null);
+  const supersededAt = optionalString(record.superseded_at, null);
+  const supersededReason = optionalString(record.superseded_reason, null);
+
+  const lifecycleRecord = {
+    ...safeIntent,
+    delivery_state: deliveryState,
+    attempt_count: attemptCount,
+    last_attempt_at: lastAttemptAt,
+    delivered_at: deliveredAt,
+    superseded_at: supersededAt,
+    superseded_reason: supersededReason,
+  };
+
+  return deepFreeze(stableNormalize(lifecycleRecord));
+}
+
+function compareLifecycleRecords(left, right) {
+  const stateRank = { pending: 0, failed: 1, delivered: 2, superseded: 3 };
+  const rankDiff = (stateRank[left.delivery_state] ?? 99) - (stateRank[right.delivery_state] ?? 99);
+  if (rankDiff) return rankDiff;
+  return compareIntents(left, right);
+}
+
+export function reconcileNotificationIntents(params = {}) {
+  if (!isRecord(params)) throw new TypeError("params must be an object");
+  const {
+    existingRecords = [],
+    currentState,
+    previousState = null,
+    policy = {},
+    timestamp = null,
+  } = params;
+
+  if (!Array.isArray(existingRecords)) throw new TypeError("existingRecords must be an array");
+  if (!isRecord(currentState)) throw new TypeError("currentState must be an object");
+  if (!isRecord(policy)) throw new TypeError("policy must be an object");
+
+  const evalTime = optionalString(timestamp, optionalString(currentState.observed_at, "1970-01-01T00:00:00Z"));
+  const epsilon = positiveThreshold(policy.epsilon ?? 0.009, "epsilon");
+
+  const normalizedExisting = existingRecords.map(safeIntentLifecycleRecord);
+  const reconciledMap = new Map();
+
+  for (const record of normalizedExisting) {
+    const existing = reconciledMap.get(record.intent_id);
+    if (!existing || (existing.delivery_state !== "delivered" && record.delivery_state === "delivered")) {
+      reconcileRecord(record);
+    }
+  }
+
+  function reconcileRecord(record) {
+    if (record.delivery_state !== "pending" && record.delivery_state !== "failed") {
+      reconciledMap.set(record.intent_id, record);
+      return;
+    }
+
+    let isActionable = true;
+    let supersedeReason = null;
+
+    if (!sameComparisonScope(record, currentState)) {
+      if (currentState.comparison_scope_key) {
+        isActionable = false;
+        supersedeReason = "scope_changed";
+      }
+    } else {
+      const eventType = record.event_type;
+
+      if (["meaningful_drop", "new_low", "price_change"].includes(eventType)) {
+        if (freshPriceState(currentState)) {
+          const recordedValue = canonicalNumber(record.current_value);
+          const currentVal = currentState.current_value;
+          if (recordedValue !== null && currentVal > recordedValue + epsilon) {
+            isActionable = false;
+            supersedeReason = "price_increased";
+          }
+        }
+      } else if (eventType === "availability_restored") {
+        if (trustworthyAvailabilityState(currentState)) {
+          if (currentState.availability_state === "unavailable") {
+            isActionable = false;
+            supersedeReason = "became_unavailable";
+          }
+        }
+      } else if (eventType === "target_hit") {
+        if (freshPriceState(currentState)) {
+          if (currentState.target_state === "above") {
+            isActionable = false;
+            supersedeReason = "target_exceeded";
+          }
+        }
+      } else if (eventType === "observation_failed") {
+        if (currentState.freshness === "fresh") {
+          isActionable = false;
+          supersedeReason = "observation_recovered";
+        }
+      }
+    }
+
+    if (!isActionable) {
+      reconciledMap.set(record.intent_id, safeIntentLifecycleRecord({
+        ...record,
+        delivery_state: "superseded",
+        superseded_at: evalTime,
+        superseded_reason: supersedeReason,
+      }));
+    } else {
+      reconciledMap.set(record.intent_id, record);
+    }
+  }
+
+  const derivedIntents = deriveIntents(previousState, currentState, policy);
+  for (const intent of derivedIntents) {
+    const existing = reconciledMap.get(intent.intent_id);
+    if (!existing) {
+      reconciledMap.set(intent.intent_id, safeIntentLifecycleRecord({
+        ...intent,
+        delivery_state: "pending",
+        attempt_count: 0,
+        last_attempt_at: null,
+        delivered_at: null,
+        superseded_at: null,
+        superseded_reason: null,
+      }));
+    }
+  }
+
+  const result = [...reconciledMap.values()].sort(compareLifecycleRecords);
+  return deepFreeze(result);
+}
+
+export function recordDeliveryAttempt(records, attemptResult = {}) {
+  const list = Array.isArray(records) ? records : [records];
+  if (!isRecord(attemptResult)) throw new TypeError("attemptResult must be an object");
+
+  const status = optionalString(attemptResult.status, "delivered").toLowerCase();
+  const timestamp = optionalString(attemptResult.timestamp, "1970-01-01T00:00:00Z");
+  const reason = optionalString(attemptResult.reason, null);
+
+  const updated = list.map((item) => {
+    const record = safeIntentLifecycleRecord(item);
+    if (status === "delivered") {
+      return safeIntentLifecycleRecord({
+        ...record,
+        delivery_state: "delivered",
+        delivered_at: timestamp,
+        last_attempt_at: timestamp,
+        attempt_count: record.attempt_count + 1,
+      });
+    } else if (status === "failed") {
+      return safeIntentLifecycleRecord({
+        ...record,
+        delivery_state: "failed",
+        last_attempt_at: timestamp,
+        attempt_count: record.attempt_count + 1,
+      });
+    } else if (status === "suppressed") {
+      return safeIntentLifecycleRecord({
+        ...record,
+        delivery_state: "delivered",
+        delivered_at: timestamp,
+        last_attempt_at: timestamp,
+        superseded_reason: reason || "suppressed_by_policy",
+      });
+    } else {
+      throw new TypeError(`invalid delivery attempt status: ${status}`);
+    }
+  });
+
+  return deepFreeze(updated);
 }

@@ -169,10 +169,10 @@ class NotificationIntentBridgeHardeningTests(unittest.TestCase):
         self.assertIn("non-string field", str(ctx.exception).lower())
 
     def test_transport_field_check_is_case_insensitive_and_non_echoing(self):
-        field_sentinel = "Pending"
+        field_sentinel = "Apprise_Url"
         with self.assertRaises(NotificationIntentBridgeError) as ctx:
             invoke_intent_cli("deriveIntents", {field_sentinel: "synthetic"})
-        self.assertIn("transport state field", str(ctx.exception).lower())
+        self.assertIn("forbidden private field", str(ctx.exception).lower())
         self.assertNotIn(field_sentinel, str(ctx.exception))
 
 
