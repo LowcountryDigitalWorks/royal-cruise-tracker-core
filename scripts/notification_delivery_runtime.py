@@ -133,6 +133,20 @@ def intent_from_alert(alert: dict[str, Any], observed_at: str, base: Any) -> dic
         "availability_return": "availability_restored",
     }[kind]
 
+    policy_key = {
+        "fare": "fare_new_low",
+        "watch_new_low": "watch_new_low",
+        "purchase_reprice": "purchase_reprice",
+        "availability_return": "availability_restored",
+    }.get(kind)
+    if kind == "watch_initial_good":
+        target = _safe_float(alert.get("target"))
+        if target is None:
+            raise ValueError("target alert requires target")
+        policy_key = f"target:{target:.6f}"
+    if policy_key is None:
+        raise ValueError(f"unsupported alert kind for policy identity: {kind}")
+
     payload: dict[str, Any] = {
         "subject_key": subject_key,
         "group_key": f"royal:{base.SAILING_ID}",
@@ -158,13 +172,7 @@ def intent_from_alert(alert: dict[str, Any], observed_at: str, base: Any) -> dic
             if event_type == "availability_restored"
             else "verify_current_price"
         ),
-        "policy_key": {
-            "fare": "fare_new_low",
-            "watch_new_low": "watch_new_low",
-            "watch_initial_good": f"target:{_safe_float(alert.get('target')):.6f}",
-            "purchase_reprice": "purchase_reprice",
-            "availability_return": "availability_restored",
-        }[kind],
+        "policy_key": policy_key,
     }
     savings = _safe_float(alert.get("savings"))
     if savings is not None:
