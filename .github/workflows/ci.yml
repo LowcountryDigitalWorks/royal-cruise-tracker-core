@@ -45,7 +45,11 @@ jobs:
         run: node --test tests/test_decision_history.mjs
 
       - name: Check notification-intent module syntax
-        run: node --check src/notification-intent.mjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/notification-intent.mjs
+          node --check scripts/notification_intent_cli.mjs
 
       - name: Run notification-intent semantic tests
         run: node --test tests/test_notification_intent.mjs tests/test_notification_intent_integrity.mjs
