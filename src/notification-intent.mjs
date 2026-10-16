@@ -393,6 +393,214 @@ function compareIntents(left, right) {
   return String(left.intent_id).localeCompare(String(right.intent_id));
 }
 
+const VALID_DELIVERY_STATES = Object.freeze(["pending", "delivered", "failed", "superseded"]);
+
+export function evaluateIntentActionability(intent, currentState) {
+  if (!isRecord(intent)) throw new TypeError("intent must be an object");
+  assertNoForbiddenKeys(intent, "intent");
+  const safeIntent = safeIntentPayload(intent);
+
+  if (!isRecord(currentState)) {
+    return deepFreeze({ actionable: true, reason: "no_current_state" });
+  }
+  assertNoForbiddenKeys(currentState, "currentState");
+
+  const intentSubject = safeIntent.subject_key;
+  const currentSubject = optionalString(currentState.subject_key);
+  if (currentSubject && intentSubject !== currentSubject) {
+    return deepFreeze({ actionable: true, reason: "subject_mismatch" });
+  }
+
+  const intentScope = safeIntent.comparison_scope_key;
+  const currentScope = optionalString(currentState.comparison_scope_key);
+  if (intentScope && currentScope && intentScope !== currentScope) {
+    return deepFreeze({ actionable: true, reason: "scope_mismatch" });
+  }
+
+  const eventType = safeIntent.event_type;
+  const epsilon = 0.009;
+
+  switch (eventType) {
+    case "meaningful_drop":
+    case "new_low":
+    case "price_change": {
+      if (!freshPriceState(currentState)) {
+        return deepFreeze({ actionable: true, reason: "unverifiable_observation_pending" });
+      }
+      const intentPrice = canonicalNumber(safeIntent.current_value);
+      const currentPrice = canonicalNumber(currentState.current_value);
+      if (intentPrice !== null && currentPrice !== null) {
+        if (currentPrice > intentPrice + epsilon) {
+          return deepFreeze({ actionable: false, reason: "price_increased" });
+        }
+      }
+      return deepFreeze({ actionable: true, reason: "current" });
+    }
+    case "target_hit": {
+      if (!freshPriceState(currentState)) {
+        return deepFreeze({ actionable: true, reason: "unverifiable_observation_pending" });
+      }
+      if (currentState.target_state === "above") {
+        return deepFreeze({ actionable: false, reason: "target_no_longer_reached" });
+      }
+      return deepFreeze({ actionable: true, reason: "current" });
+    }
+    case "availability_restored": {
+      if (!trustworthyAvailabilityState(currentState)) {
+        return deepFreeze({ actionable: true, reason: "unverifiable_observation_pending" });
+      }
+      if (currentState.availability_state === "unavailable") {
+        return deepFreeze({ actionable: false, reason: "no_longer_available" });
+      }
+      return deepFreeze({ actionable: true, reason: "current" });
+    }
+    case "observation_failed": {
+      if (currentState.freshness === "fresh") {
+        return deepFreeze({ actionable: false, reason: "observation_recovered" });
+      }
+      return deepFreeze({ actionable: true, reason: "current" });
+    }
+    default: {
+      return deepFreeze({ actionable: true, reason: "current" });
+    }
+  }
+}
+
+export function safeDeliveryRecord(record) {
+  if (!isRecord(record)) throw new TypeError("delivery record must be an object");
+  assertNoForbiddenKeys(record, "record");
+
+  const rawIntent = record.intent ?? (record.event_type ? record : null);
+  if (!rawIntent) throw new TypeError("delivery record missing required intent");
+  const safeIntent = safeIntentPayload(rawIntent);
+
+  const deliveryState = requiredString(record.delivery_state ?? "pending", "delivery_state").toLowerCase();
+  if (!VALID_DELIVERY_STATES.includes(deliveryState)) {
+    throw new TypeError(`invalid delivery_state '${deliveryState}'`);
+  }
+
+  const attemptCount = Math.max(0, Math.trunc(Number(record.attempt_count ?? 0)));
+  if (!Number.isFinite(attemptCount)) throw new TypeError("attempt_count must be a non-negative finite number");
+
+  const deliveryRecord = {
+    intent_id: safeIntent.intent_id,
+    intent: safeIntent,
+    delivery_state: deliveryState,
+    attempt_count: attemptCount,
+    last_attempt_at: optionalString(record.last_attempt_at),
+    delivered_at: optionalString(record.delivered_at),
+    superseded_at: optionalString(record.superseded_at),
+    superseded_reason: optionalString(record.superseded_reason),
+  };
+
+  return deepFreeze(stableNormalize(deliveryRecord));
+}
+
+export function reconcileDeliveryState(existingRecords = [], derivedIntents = [], currentState = null, options = {}) {
+  if (!Array.isArray(existingRecords)) throw new TypeError("existingRecords must be an array");
+  if (!Array.isArray(derivedIntents)) throw new TypeError("derivedIntents must be an array");
+  if (currentState !== null && !isRecord(currentState)) throw new TypeError("currentState must be an object or null");
+  if (!isRecord(options)) throw new TypeError("options must be an object");
+
+  assertNoForbiddenKeys(existingRecords, "existingRecords");
+  assertNoForbiddenKeys(derivedIntents, "derivedIntents");
+  if (currentState) assertNoForbiddenKeys(currentState, "currentState");
+  assertNoForbiddenKeys(options, "options");
+
+  const recordMap = new Map();
+
+  for (const item of existingRecords) {
+    const safeRec = safeDeliveryRecord(item);
+    recordMap.set(safeRec.intent_id, safeRec);
+  }
+
+  for (const rawIntent of derivedIntents) {
+    const safeInt = safeIntentPayload(rawIntent);
+    if (!recordMap.has(safeInt.intent_id)) {
+      const isSuppressed = options.suppress_delivery === true || options.proof_mode === true;
+      const initialRecord = safeDeliveryRecord({
+        intent_id: safeInt.intent_id,
+        intent: safeInt,
+        delivery_state: isSuppressed ? "delivered" : "pending",
+        attempt_count: isSuppressed ? 1 : 0,
+        delivered_at: isSuppressed ? (safeInt.observed_at ?? null) : null,
+        last_attempt_at: isSuppressed ? (safeInt.observed_at ?? null) : null,
+      });
+      recordMap.set(safeInt.intent_id, initialRecord);
+    }
+  }
+
+  const updatedRecords = [];
+  const actionableIntents = [];
+
+  for (const record of recordMap.values()) {
+    let currentRecord = record;
+
+    if (currentRecord.delivery_state === "pending" || currentRecord.delivery_state === "failed") {
+      const evalResult = evaluateIntentActionability(currentRecord.intent, currentState);
+      if (!evalResult.actionable) {
+        currentRecord = safeDeliveryRecord({
+          ...currentRecord,
+          delivery_state: "superseded",
+          superseded_at: currentState?.observed_at ?? null,
+          superseded_reason: evalResult.reason,
+        });
+      } else {
+        actionableIntents.push(currentRecord.intent);
+      }
+    }
+
+    updatedRecords.push(currentRecord);
+  }
+
+  const sortedRecords = deepFreeze([...updatedRecords].sort((a, b) => a.intent_id.localeCompare(b.intent_id)));
+  const sortedActionableIntents = deepFreeze([...actionableIntents].sort(compareIntents));
+
+  return deepFreeze({
+    records: sortedRecords,
+    actionableIntents: sortedActionableIntents,
+  });
+}
+
+export function recordDeliveryResult(existingRecords = [], targetIntentIds = [], deliveryResult = {}, options = {}) {
+  if (!Array.isArray(existingRecords)) throw new TypeError("existingRecords must be an array");
+  if (!Array.isArray(targetIntentIds)) throw new TypeError("targetIntentIds must be an array");
+  if (!isRecord(deliveryResult)) throw new TypeError("deliveryResult must be an object");
+  if (!isRecord(options)) throw new TypeError("options must be an object");
+
+  assertNoForbiddenKeys(existingRecords, "existingRecords");
+  assertNoForbiddenKeys(deliveryResult, "deliveryResult");
+  assertNoForbiddenKeys(options, "options");
+
+  const targetSet = new Set(targetIntentIds.map((id) => String(id).trim()));
+  const attemptedAt = optionalString(deliveryResult.attempted_at, null);
+  const isSuccess = deliveryResult.success === true || deliveryResult.proof_mode === true || options.proof_mode === true;
+
+  const updated = existingRecords.map((item) => {
+    const rec = safeDeliveryRecord(item);
+    if (!targetSet.has(rec.intent_id)) return rec;
+
+    if (isSuccess) {
+      return safeDeliveryRecord({
+        ...rec,
+        delivery_state: "delivered",
+        attempt_count: rec.attempt_count + 1,
+        last_attempt_at: attemptedAt ?? rec.intent.observed_at,
+        delivered_at: rec.delivered_at ?? attemptedAt ?? rec.intent.observed_at,
+      });
+    } else {
+      return safeDeliveryRecord({
+        ...rec,
+        delivery_state: "failed",
+        attempt_count: rec.attempt_count + 1,
+        last_attempt_at: attemptedAt ?? rec.intent.observed_at,
+      });
+    }
+  });
+
+  return deepFreeze([...updated].sort((a, b) => a.intent_id.localeCompare(b.intent_id)));
+}
+
 export function groupIntents(intents) {
   if (!Array.isArray(intents)) throw new TypeError("intents must be an array");
   const deduped = new Map();

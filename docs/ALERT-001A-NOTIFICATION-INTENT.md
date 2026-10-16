@@ -100,20 +100,53 @@ Meaningful-drop and any-change modes may specify:
 
 An epsilon suppresses meaningless numeric wobble. Any-change direction is explicitly `DOWN` or `BOTH` in this release.
 
-## Delivery-state non-scope
+## Delivery state lifecycle and reliability (ALERT-REL-001)
 
-ALERT-001A has no persisted states such as:
+ALERT-REL-001 decouples observation history advancement from notification transport delivery acknowledgment.
 
-- pending;
-- delivered;
-- retryable;
-- superseded;
-- attempt count;
-- delivery acknowledgement timestamp.
+An observation can advance price/watch history independently of notification transport. Actionable alert intents remain pending and retriable across subsequent runs until delivery is acknowledged or the underlying event is superseded.
 
-Those belong to ALERT-REL-001 (#15), after this pure semantic identity contract is independently accepted.
+### Conceptual delivery states
 
-`SUPPRESS_ALERTS`/proof mode is a delivery policy and must not be represented as a production delivery failure.
+- `pending`: Intent created, delivery pending or not yet attempted;
+- `failed`: Notification transport call failed on attempt, retryable if actionable;
+- `delivered`: Notification transport acknowledged successfully;
+- `superseded`: Underlying event is no longer actionable/current before retry (e.g. price increased or item became unavailable).
+
+### Pure delivery functions
+
+#### `evaluateIntentActionability(intent, currentState)`
+Evaluates whether a previously generated pending/failed intent remains actionable relative to latest observation state:
+- Price drop / new low / change: actionable if current price is still <= original intent price; superseded with `price_increased` if current price increased;
+- Target hit: actionable if target state remains `reached`; superseded with `target_no_longer_reached` if target state is `above`;
+- Availability restored: actionable if availability state remains `available`; superseded with `no_longer_available` if state becomes `unavailable`;
+- Observation failed: actionable if freshness remains `failed`; superseded with `observation_recovered` when observation becomes `fresh`.
+
+Provider or observation failure during a subsequent run keeps pending intents unverifiable and pending rather than incorrectly superseding them.
+
+#### `safeDeliveryRecord(record)`
+Produces a frozen, allowlisted delivery record object containing:
+- `intent_id` and safe `intent` payload;
+- `delivery_state` (`pending` | `delivered` | `failed` | `superseded`);
+- `attempt_count` (non-negative integer);
+- optional `last_attempt_at`, `delivered_at`, `superseded_at`, `superseded_reason`.
+
+Enforces privacy checks (`assertNoForbiddenKeys`) to ensure no PII or transport secrets exist in stored delivery state.
+
+#### `reconcileDeliveryState(existingRecords, derivedIntents, currentState, options)`
+Reconciles existing delivery records and newly derived intents against current observation state:
+- Adds new derived intents as `pending` records;
+- Evaluates pending/failed records against `currentState` using `evaluateIntentActionability()`;
+- Marks non-actionable records as `superseded`;
+- Preserves original intent context (including original `observed_at`) for retryable intents;
+- Returns `{ records, actionableIntents }`.
+
+#### `recordDeliveryResult(existingRecords, targetIntentIds, deliveryResult, options)`
+Updates delivery records following a transport attempt:
+- `success: true` or `proof_mode: true` transitions matching records to `delivered` state with `delivered_at` timestamp;
+- `success: false` transitions matching records to `failed` state and increments `attempt_count`.
+
+`SUPPRESS_ALERTS`/proof mode is a delivery policy and is recorded as `delivered` rather than a production delivery failure.
 
 ## Compatibility
 

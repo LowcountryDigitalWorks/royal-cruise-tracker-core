@@ -40,6 +40,12 @@ For that single-profile production contract, the provider-capable process receiv
 
 Adaptive v1-v4 extend this behavior with scheduling, history, purchased-order state, promotion context, and availability/restock intelligence.
 
+### Notification intent & delivery state (ALERT-001A / ALERT-REL-001)
+
+`src/notification-intent.mjs` provides provider-neutral notification intent derivation and lifecycle delivery state tracking.
+
+Observation history advances independently of notification transport. Transport failure leaves actionable intents pending without losing valid observation history, and subsequent runs re-evaluate pending intents against current state to retry actionable alerts or mark superseded intents resolved.
+
 ### Decision/history semantic core
 
 `src/decision-history.mjs` is a pure, dependency-free semantic layer for a later synthetic-only decision/history UX.

@@ -38,10 +38,22 @@ class NotificationIntentBridgeError(Exception):
     """Fail-closed exception raised when the notification-intent bridge fails."""
 
 
-def _assert_no_forbidden_keys(value: Any, path: str = "value") -> None:
+DELIVERY_ACTIONS = {
+    "evaluateIntentActionability",
+    "evaluate_intent_actionability",
+    "safeDeliveryRecord",
+    "safe_delivery_record",
+    "reconcileDeliveryState",
+    "reconcile_delivery_state",
+    "recordDeliveryResult",
+    "record_delivery_result",
+}
+
+
+def _assert_no_forbidden_keys(value: Any, path: str = "value", allow_transport_fields: bool = False) -> None:
     if isinstance(value, list):
         for idx, item in enumerate(value):
-            _assert_no_forbidden_keys(item, f"{path}[{idx}]")
+            _assert_no_forbidden_keys(item, f"{path}[{idx}]", allow_transport_fields=allow_transport_fields)
         return
     if isinstance(value, dict):
         for k, v in value.items():
@@ -53,11 +65,11 @@ def _assert_no_forbidden_keys(value: Any, path: str = "value") -> None:
                 raise NotificationIntentBridgeError(
                     "Forbidden private field detected in notification-intent state or payload"
                 )
-            if k.lower() in FORBIDDEN_TRANSPORT_FIELDS:
+            if not allow_transport_fields and k.lower() in FORBIDDEN_TRANSPORT_FIELDS:
                 raise NotificationIntentBridgeError(
                     "Transport state field is forbidden in notification-intent semantics"
                 )
-            _assert_no_forbidden_keys(v, f"{path}.{k}")
+            _assert_no_forbidden_keys(v, f"{path}.{k}", allow_transport_fields=allow_transport_fields)
 
 
 def _parse_cli_stdout(stdout: bytes) -> dict[str, Any]:
@@ -99,6 +111,7 @@ def invoke_intent_cli(
     *,
     timeout: float = 5.0,
     node_path: str | None = None,
+    allow_transport_fields: bool | None = None,
 ) -> Any:
     """Invoke the Node notification-intent CLI with explicit JSON input and return sanitized result."""
     node_bin = node_path or shutil.which("node") or "node"
@@ -116,7 +129,10 @@ def invoke_intent_cli(
             "Notification intent payload contains a reserved request envelope field"
         )
 
-    _assert_no_forbidden_keys(payload, "request_payload")
+    if allow_transport_fields is None:
+        allow_transport_fields = action in DELIVERY_ACTIONS
+
+    _assert_no_forbidden_keys(payload, "request_payload", allow_transport_fields=allow_transport_fields)
 
     # Trusted envelope values are applied last so payload content can never override them.
     request_obj = {
@@ -172,7 +188,7 @@ def invoke_intent_cli(
         raise NotificationIntentBridgeError("Node CLI response missing required 'result' field")
 
     result = response["result"]
-    _assert_no_forbidden_keys(result, "response_result")
+    _assert_no_forbidden_keys(result, "response_result", allow_transport_fields=allow_transport_fields)
 
     return result
 
@@ -214,6 +230,70 @@ def safe_intent_payload(
     """Validate and produce allowlisted notification intent payload via Node bridge."""
     payload = {"intent": intent}
     return invoke_intent_cli("safeIntentPayload", payload, timeout=timeout, node_path=node_path)
+
+
+def evaluate_intent_actionability(
+    intent: dict[str, Any],
+    current_state: dict[str, Any] | None = None,
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate whether a notification intent remains actionable given current state."""
+    payload = {
+        "intent": intent,
+        "current_state": current_state,
+    }
+    return invoke_intent_cli("evaluateIntentActionability", payload, timeout=timeout, node_path=node_path)
+
+
+def safe_delivery_record(
+    record: dict[str, Any],
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> dict[str, Any]:
+    """Validate and return safe allowlisted delivery record via Node bridge."""
+    payload = {"record": record}
+    return invoke_intent_cli("safeDeliveryRecord", payload, timeout=timeout, node_path=node_path)
+
+
+def reconcile_delivery_state(
+    existing_records: list[dict[str, Any]],
+    derived_intents: list[dict[str, Any]],
+    current_state: dict[str, Any] | None = None,
+    policy_options: dict[str, Any] | None = None,
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> dict[str, Any]:
+    """Reconcile pending/delivered notification intent records with current state via Node bridge."""
+    payload = {
+        "existing_records": existing_records,
+        "derived_intents": derived_intents,
+        "current_state": current_state,
+        "options": policy_options or {},
+    }
+    return invoke_intent_cli("reconcileDeliveryState", payload, timeout=timeout, node_path=node_path)
+
+
+def record_delivery_result(
+    existing_records: list[dict[str, Any]],
+    target_intent_ids: list[str],
+    delivery_result: dict[str, Any],
+    policy_options: dict[str, Any] | None = None,
+    *,
+    timeout: float = 5.0,
+    node_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Update delivery records following a transport attempt via Node bridge."""
+    payload = {
+        "existing_records": existing_records,
+        "target_intent_ids": target_intent_ids,
+        "delivery_result": delivery_result,
+        "options": policy_options or {},
+    }
+    return invoke_intent_cli("recordDeliveryResult", payload, timeout=timeout, node_path=node_path)
 
 
 def map_observation_to_semantic_state(
