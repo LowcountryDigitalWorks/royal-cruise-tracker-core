@@ -8,9 +8,11 @@ current-state eligibility gates before transport.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 REPLAY_ROWS_PER_SUBJECT = 4
+REPLAY_MAX_AGE_HOURS = 48
 EPSILON = 0.009
 
 
@@ -35,6 +37,14 @@ def _rank(row: dict[str, Any]) -> int:
         return int(row.get("recency_rank") or 10**9)
     except (TypeError, ValueError):
         return 10**9
+
+
+def replay_floor_iso(now: datetime | None = None) -> str:
+    """Return the oldest retained transition eligible for crash-recovery replay."""
+    instant = now or datetime.now(timezone.utc)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return (instant.astimezone(timezone.utc) - timedelta(hours=REPLAY_MAX_AGE_HOURS)).isoformat()
 
 
 def _candidate(alert: dict[str, Any], observed_at: Any) -> dict[str, Any] | None:
@@ -223,6 +233,7 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
     """Query a bounded recent-row window and reconstruct missing transition candidates."""
     bid = base.booking_id(profile)
     common = [profile.label, base.SAILING_ID, bid]
+    replay_floor = replay_floor_iso()
     price_sql = f"""
     WITH sequenced AS (
       SELECT id,product_id,COALESCE(passenger_class,'all') AS passenger_class,source,
@@ -245,6 +256,7 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
            promotion_label,observed_at,prior_min,recency_rank
       FROM sequenced
      WHERE recency_rank<={REPLAY_ROWS_PER_SUBJECT}
+       AND julianday(observed_at)>=julianday(?)
      ORDER BY source,product_id,passenger_class,recency_rank
     """
     purchase_sql = """
@@ -255,7 +267,7 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
      WHERE p.household_id=? AND p.sailing_id=? AND p.booking_id=? AND p.active=1
     """
     results = base.d1_request([
-        {"sql": price_sql, "params": common},
+        {"sql": price_sql, "params": [*common, replay_floor]},
         {"sql": purchase_sql, "params": common},
     ])
     price_rows = (results[0].get("results") or []) if results else []
@@ -324,6 +336,7 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
            ) AS promotion_label
       FROM sequenced s
      WHERE s.recency_rank<={REPLAY_ROWS_PER_SUBJECT}
+       AND julianday(s.observed_at)>=julianday(?)
      ORDER BY s.product_id,s.passenger_class,s.recency_rank
     """
     try:
@@ -336,6 +349,7 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
                 profile.label, base.SAILING_ID,
                 *common,
                 *common,
+                replay_floor,
             ],
         }])
         availability_rows = (availability_result[0].get("results") or []) if availability_result else []

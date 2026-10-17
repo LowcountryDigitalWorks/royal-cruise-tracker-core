@@ -411,13 +411,15 @@ class DeliveryStore:
             {"sql": _PROVIDER_RUN_INDEX_SQL, "params": []},
         ])
 
-    def record_provider_run(self, run_at: str, success: bool | None) -> None:
-        """Persist sanitized provider-run continuity independently of product observations.
+    def record_provider_run(self, run_at: str, success: bool | None) -> bool:
+        """Persist and read back sanitized provider-run continuity.
 
         ``success=None`` records a pre-acquisition ``started`` marker. The same marker is
-        then compare-key updated to ``success`` or ``provider_failed``. If outcome update
-        later fails, the durable ``started`` row still breaks restock continuity rather
-        than silently making two availability observations look adjacent.
+        then compare-key updated to ``success`` or ``provider_failed``. Every transition
+        is read back with a separate D1 request so callers can fail closed unless the
+        exact outcome is durably visible. If a later outcome update fails, the durable
+        ``started`` row still breaks restock continuity rather than silently making two
+        availability observations look adjacent.
         """
         when = str(run_at or "").strip()
         if not when:
@@ -434,6 +436,17 @@ class DeliveryStore:
             """,
             "params": [self.household_id, self.sailing_id, when, outcome],
         }])
+        rows = self.base.d1_request([{
+            "sql": """
+            SELECT outcome
+              FROM notification_observation_runs_v1
+             WHERE household_id=? AND sailing_id=? AND run_at=?
+             LIMIT 1
+            """,
+            "params": [self.household_id, self.sailing_id, when],
+        }])
+        result = (rows[0].get("results") or []) if rows else []
+        return bool(result and str(result[0].get("outcome") or "") == outcome)
 
     def availability_contiguous(self, product_id: str, role: str, current_observed_at: str) -> bool:
         """Prove the previous unavailable observation is from the immediately prior provider run."""
@@ -934,13 +947,21 @@ def main(
         provider_run_at = utc_now_iso()
         continuity_started = False
         recorder = getattr(store, "record_provider_run", None)
-        if recorder is not None:
-            try:
-                recorder(provider_run_at, None)
-                continuity_started = True
-            except Exception:
-                print(f"::warning::Could not persist provider-start continuity marker for {profile.label}")
-                exit_code = max(exit_code, 1)
+        if recorder is None:
+            print(f"::warning::Provider-run continuity store is unavailable for {profile.label}; Royal acquisition skipped")
+            exit_code = max(exit_code, 1)
+            continue
+        try:
+            continuity_started = bool(recorder(provider_run_at, None))
+        except Exception:
+            continuity_started = False
+        if not continuity_started:
+            # Do not invoke Royal unless the pre-acquisition attempt marker is confirmed
+            # durable. Otherwise a provider exception could disappear between two
+            # availability observations and fabricate retained restock continuity.
+            print(f"::warning::Could not confirm provider-start continuity marker for {profile.label}; Royal acquisition skipped")
+            exit_code = max(exit_code, 1)
+            continue
 
         import tempfile
         from pathlib import Path
@@ -950,19 +971,19 @@ def main(
         except Exception:
             # Preserve the existing exception/failure semantics, but first make the
             # attempted provider run durable whenever D1 is available.
-            if recorder is not None:
-                try:
-                    recorder(provider_run_at, False)
-                except Exception:
-                    print(f"::warning::Could not persist provider-exception continuity marker for {profile.label}")
+            try:
+                if not recorder(provider_run_at, False):
+                    print(f"::warning::Could not confirm provider-exception continuity marker for {profile.label}")
+            except Exception:
+                print(f"::warning::Could not persist provider-exception continuity marker for {profile.label}")
             raise
         if status != 0:
             exit_code = status
-            if recorder is not None:
-                try:
-                    recorder(provider_run_at, False)
-                except Exception:
-                    print(f"::warning::Could not persist provider-failure continuity marker for {profile.label}")
+            try:
+                if not recorder(provider_run_at, False):
+                    print(f"::warning::Could not confirm provider-failure continuity marker for {profile.label}")
+            except Exception:
+                print(f"::warning::Could not persist provider-failure continuity marker for {profile.label}")
             if profile.apprise_url:
                 base.send_apprise(
                     profile,
@@ -974,15 +995,14 @@ def main(
         # Mark successful acquisition immediately, before parsing/derivation can raise.
         # The exact provider-run timestamp becomes the observation timestamp so endpoint
         # continuity markers and persisted availability evidence share one durable key.
-        provider_continuity_recorded = continuity_started
-        if recorder is not None:
-            try:
-                recorder(provider_run_at, True)
-                provider_continuity_recorded = True
-            except Exception:
-                provider_continuity_recorded = False
-                print(f"::warning::Could not persist provider-success continuity marker for {profile.label}")
-                exit_code = max(exit_code, 1)
+        provider_continuity_recorded = False
+        try:
+            provider_continuity_recorded = bool(recorder(provider_run_at, True))
+        except Exception:
+            provider_continuity_recorded = False
+        if not provider_continuity_recorded:
+            print(f"::warning::Could not confirm provider-success continuity marker for {profile.label}")
+            exit_code = max(exit_code, 1)
 
         snapshot = base.parse_history(profile, watchlist, lines)
         snapshot["observed_at"] = provider_run_at

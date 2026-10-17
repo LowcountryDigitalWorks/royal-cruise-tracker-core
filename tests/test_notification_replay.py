@@ -149,6 +149,12 @@ class ReplayTests(unittest.TestCase):
         adjacent = {**base_row, "continuity_proven": 1}
         self.assertEqual(len(replay.reconstruct_availability_candidates([adjacent], Base)), 1)
 
+    def test_replay_floor_is_explicitly_time_bounded(self):
+        from datetime import datetime, timezone
+        floor = replay.replay_floor_iso(datetime(2030, 1, 3, 12, 0, tzinfo=timezone.utc))
+        self.assertEqual(floor, "2030-01-01T12:00:00+00:00")
+        self.assertEqual(replay.REPLAY_MAX_AGE_HOURS, 48)
+
     def test_availability_replay_query_requires_adjacent_provider_run_markers(self):
         calls = []
         class ContinuityBase(Base):
@@ -159,7 +165,10 @@ class ReplayTests(unittest.TestCase):
                     return [{"results": []}, {"results": []}]
                 return [{"results": []}]
         self.assertEqual(replay.load_bounded_replay_candidates(PROFILE, ContinuityBase, Adaptive), [])
+        price_sql = calls[0][0]["sql"]
         availability_sql = calls[1][0]["sql"]
+        self.assertIn("julianday(observed_at)>=julianday(?)", price_sql)
+        self.assertIn("julianday(s.observed_at)>=julianday(?)", availability_sql)
         self.assertIn("notification_observation_runs_v1", availability_sql)
         self.assertIn("prior_observed_at", availability_sql)
         self.assertIn("NOT EXISTS", availability_sql)
@@ -178,6 +187,50 @@ class ReplayTests(unittest.TestCase):
         candidate = replay.reconstruct_price_candidates(PROFILE, rows, purchases, Base, Adaptive)[0]
         self.assertEqual(candidate["alert"]["kind"], "purchase_reprice")
         self.assertEqual(candidate["alert"]["savings"], 60.0)
+
+    def test_replay_time_floor_excludes_old_price_transition(self):
+        class SqliteBase(Base):
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            @classmethod
+            def d1_request(cls, batch):
+                result = []
+                for query in batch:
+                    cursor = cls.conn.execute(query["sql"], query.get("params") or [])
+                    result.append({"success": True, "results": [dict(row) for row in cursor.fetchall()]})
+                return result
+
+        conn = SqliteBase.conn
+        conn.executescript("""
+        CREATE TABLE price_snapshots(
+          id INTEGER PRIMARY KEY,household_id TEXT,sailing_id TEXT,booking_id TEXT,
+          product_id TEXT,source TEXT,passenger_class TEXT,observed_price REAL,
+          normalized_total REAL,promotion_label TEXT,observed_at TEXT
+        );
+        CREATE TABLE purchases(
+          product_id TEXT,passenger_scope TEXT,paid_unit_price REAL,paid_total REAL,
+          currency TEXT,household_id TEXT,sailing_id TEXT,booking_id TEXT,active INTEGER
+        );
+        CREATE TABLE products(id TEXT,name TEXT,prefix TEXT,price_unit TEXT);
+        CREATE TABLE product_availability(
+          id INTEGER PRIMARY KEY,household_id TEXT,sailing_id TEXT,booking_id TEXT,
+          product_id TEXT,passenger_class TEXT,status TEXT,observed_at TEXT
+        );
+        CREATE TABLE notification_observation_runs_v1(
+          household_id TEXT,sailing_id TEXT,run_at TEXT,outcome TEXT
+        );
+        """)
+        common = (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id, "authenticated_royal", "adult")
+        conn.execute("INSERT INTO price_snapshots VALUES(1,?,?,?,?,?,?,?,?,?,?)", (*common, 100.0, 300.0, None, "2030-01-02T10:00:00+00:00"))
+        conn.execute("INSERT INTO price_snapshots VALUES(2,?,?,?,?,?,?,?,?,?,?)", (*common, 90.0, 270.0, None, "2030-01-02T11:00:00+00:00"))
+        conn.commit()
+
+        with patch.object(replay, "replay_floor_iso", return_value="2030-01-02T11:30:00+00:00"):
+            self.assertEqual(replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive), [])
+        with patch.object(replay, "replay_floor_iso", return_value="2030-01-02T10:30:00+00:00"):
+            candidates = replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive)
+        self.assertEqual([item["alert"]["kind"] for item in candidates], ["watch_new_low"])
+        conn.close()
 
     def test_restock_sql_continuity_breaks_on_any_intervening_provider_run(self):
         class SqliteBase(Base):
