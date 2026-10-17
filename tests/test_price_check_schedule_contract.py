@@ -28,17 +28,28 @@ class PriceCheckScheduleContractTests(unittest.TestCase):
         self.assertNotIn("SECONDARY_WATCHLIST_JSON", provider_block)
 
     def test_sparse_checkout_contains_public_core_dependencies(self):
-        self.assertIn("cloudflare/scheduler-wake.js", WORKFLOW)
-        self.assertIn("config/demo-profile.json", WORKFLOW)
-        self.assertIn("scripts/runtime_profile.py", WORKFLOW)
-        self.assertIn("scripts/royal_check_due.py", WORKFLOW)
-        self.assertIn("tests/test_sec_001a_contract.py", WORKFLOW)
+        for required in (
+            "cloudflare/scheduler-wake.js",
+            "config/demo-profile.json",
+            "scripts/runtime_profile.py",
+            "scripts/royal_check_due.py",
+            "scripts/run_tracker_adaptive_v5.py",
+            "scripts/notification_delivery_runtime.py",
+            "scripts/notification_replay.py",
+            "scripts/notification_replay_legacy.py",
+            "scripts/notification_replay_store.py",
+            "scripts/notification_intent_bridge.py",
+            "scripts/notification_intent_cli.mjs",
+            "src/notification-intent.mjs",
+            "tests/test_sec_001a_contract.py",
+        ):
+            self.assertIn(required, WORKFLOW)
 
     def test_due_gate_runs_before_docker_or_royal(self):
         preflight = WORKFLOW.index("python3 scripts/runtime_profile.py")
         gate = WORKFLOW.index("python3 scripts/royal_check_due.py")
         docker = WORKFLOW.index('docker pull "$UPSTREAM_IMAGE"')
-        royal = WORKFLOW.index("python3 scripts/public_runner.py -- python3 scripts/run_tracker_adaptive_v4.py")
+        royal = WORKFLOW.index("python3 scripts/public_runner.py -- python3 scripts/run_tracker_adaptive_v5.py")
         self.assertLess(preflight, gate)
         self.assertLess(gate, docker)
         self.assertLess(gate, royal)

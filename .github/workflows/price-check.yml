@@ -72,12 +72,20 @@ jobs:
             .github/workflows/price-check.yml
             cloudflare/scheduler-wake.js
             config/demo-profile.json
+            src/notification-intent.mjs
             scripts/runtime_profile.py
             scripts/run_tracker.py
             scripts/run_tracker_adaptive.py
             scripts/run_tracker_adaptive_v2.py
             scripts/run_tracker_adaptive_v3.py
             scripts/run_tracker_adaptive_v4.py
+            scripts/run_tracker_adaptive_v5.py
+            scripts/notification_delivery_runtime.py
+            scripts/notification_replay.py
+            scripts/notification_replay_legacy.py
+            scripts/notification_replay_store.py
+            scripts/notification_intent_bridge.py
+            scripts/notification_intent_cli.mjs
             scripts/royal_check_due.py
             scripts/schedule_health.py
             scripts/persist_schedule_health.py
@@ -194,7 +202,7 @@ jobs:
             echo "- Booking/payment/check-in mutations: none"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          python3 scripts/public_runner.py -- python3 scripts/run_tracker_adaptive_v4.py
+          python3 scripts/public_runner.py -- python3 scripts/run_tracker_adaptive_v5.py
 
           {
             echo

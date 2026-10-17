@@ -40,6 +40,12 @@ For that single-profile production contract, the provider-capable process receiv
 
 Adaptive v1-v4 extend this behavior with scheduling, history, purchased-order state, promotion context, and availability/restock intelligence.
 
+### Notification intent & delivery state (ALERT-001A / ALERT-REL-001)
+
+`src/notification-intent.mjs` provides provider-neutral notification intent derivation and lifecycle delivery state tracking.
+
+Observation history advances independently of notification transport. Transport failure leaves actionable intents pending without losing valid observation history, and subsequent runs re-evaluate pending intents against current state to retry actionable alerts or mark superseded intents resolved.
+
 ### Decision/history semantic core
 
 `src/decision-history.mjs` is a pure, dependency-free semantic layer for a later synthetic-only decision/history UX.
@@ -136,3 +142,9 @@ Public-repository sanitization is distinct from private deployment observation s
 Public-core acceptance and production activation are separate phases.
 
 A deployment should prove deterministic parity first. Only then may the owning workstream propose provisioning the matching deployment secrets, changing a scheduler or production workflow target, or otherwise activating the accepted source, with explicit current/proposed/rollback evidence. Merging code alone does not create the dedicated proof key, update Cloudflare/GitHub secret state, or authorize production cutover.
+
+### ALERT-REL-001 continuity and grouped-claim invariant
+
+The source runtime records sanitized provider-run success/failure continuity separately from product observations so replay cannot infer restock across an acquisition gap. For consolidated notification transport, every eligible constituent must be durably claimed before any send; partial claims are released with attempt-guarded writes and transport fails closed.
+
+Provider-run continuity uses a durable pre-acquisition `started` marker updated to `success` or `provider_failed` on the same run key. Successful acquisition is marked before parsing/derivation; a raised provider call or raised parser therefore cannot disappear between availability observations, and an outcome-write failure leaves the `started` marker as a fail-closed continuity break. The `started` write is read back before Royal acquisition; if it cannot be confirmed durable, that provider attempt is not started. Provider-run keys are single-use lifecycles: a new `started` marker is insert-only and cannot overwrite an existing run key, while `success` or `provider_failed` may transition only from `started`. A provider `success` endpoint is eligible for restock continuity only when a separate success-confirmation artifact exists; that artifact is written only after the runtime successfully reads back the matching `success` outcome. Together, the guarded single-use lifecycle and post-readback artifact prevent both an ambiguous outcome write and a stale confirmation from a reused key from later re-entering replay as trusted continuity. Retained transition replay is a crash-recovery mechanism only and is limited to the newest four rows per subject whose transition timestamp is no older than 48 hours; older or malformed timestamps fail closed.

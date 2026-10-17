@@ -1,7 +1,11 @@
 import {
   INTENT_CONTRACT_VERSION,
   deriveIntents,
+  evaluateIntentActionability,
   groupIntents,
+  recordDeliveryResult,
+  reconcileDeliveryState,
+  safeDeliveryRecord,
   safeIntentPayload,
 } from "../src/notification-intent.mjs";
 
@@ -77,6 +81,25 @@ function main() {
       } else if (action === "safeIntentPayload" || action === "safe_intent_payload") {
         const intent = request.intent ?? null;
         result = safeIntentPayload(intent);
+      } else if (action === "evaluateIntentActionability" || action === "evaluate_intent_actionability") {
+        const intent = request.intent ?? null;
+        const currentState = request.current_state ?? request.currentState ?? null;
+        result = evaluateIntentActionability(intent, currentState);
+      } else if (action === "safeDeliveryRecord" || action === "safe_delivery_record") {
+        const record = request.record ?? null;
+        result = safeDeliveryRecord(record);
+      } else if (action === "reconcileDeliveryState" || action === "reconcile_delivery_state") {
+        const existingRecords = request.existing_records ?? request.existingRecords ?? [];
+        const derivedIntents = request.derived_intents ?? request.derivedIntents ?? [];
+        const currentState = request.current_state ?? request.currentState ?? null;
+        const options = request.options ?? {};
+        result = reconcileDeliveryState(existingRecords, derivedIntents, currentState, options);
+      } else if (action === "recordDeliveryResult" || action === "record_delivery_result") {
+        const existingRecords = request.existing_records ?? request.existingRecords ?? [];
+        const targetIntentIds = request.target_intent_ids ?? request.targetIntentIds ?? [];
+        const deliveryResult = request.delivery_result ?? request.deliveryResult ?? {};
+        const options = request.options ?? {};
+        result = recordDeliveryResult(existingRecords, targetIntentIds, deliveryResult, options);
       } else {
         exitWithError("Unrecognized action");
         return;

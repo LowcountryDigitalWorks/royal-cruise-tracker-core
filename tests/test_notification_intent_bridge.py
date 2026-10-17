@@ -16,9 +16,13 @@ from notification_intent_bridge import (
     INTENT_CONTRACT_VERSION,
     NotificationIntentBridgeError,
     derive_intents,
+    evaluate_intent_actionability,
     group_intents,
     invoke_intent_cli,
     map_observation_to_semantic_state,
+    record_delivery_result,
+    reconcile_delivery_state,
+    safe_delivery_record,
     safe_intent_payload,
 )
 
@@ -242,6 +246,38 @@ class NotificationIntentBridgeTests(unittest.TestCase):
         proc1 = subprocess.run(["node", str(cli_path)], input=input_bytes, capture_output=True)
         proc2 = subprocess.run(["node", str(cli_path)], input=input_bytes, capture_output=True)
         self.assertEqual(proc1.stdout, proc2.stdout)
+
+    def test_bridge_evaluate_intent_actionability(self):
+        intent = safe_intent_payload({"subject_key": "subject:synthetic-demo", "event_type": "meaningful_drop", "semantic_generation": "p90", "current_value": 90.0})
+        st = sample_state(current_value=90.0)
+        res = evaluate_intent_actionability(intent, st)
+        self.assertTrue(res["actionable"])
+
+        st_high = sample_state(current_value=110.0)
+        res_high = evaluate_intent_actionability(intent, st_high)
+        self.assertFalse(res_high["actionable"])
+        self.assertEqual(res_high["reason"], "price_increased")
+
+    def test_bridge_delivery_state_reconciliation_and_result_recording(self):
+        prev = sample_state(current_value=100.0, historical_low=100.0)
+        curr = sample_state(current_value=90.0, historical_low=90.0, price_generation="p90")
+        derived = derive_intents(prev, curr, {"new_low": {"enabled": True}})
+
+        rec = reconcile_delivery_state([], derived, curr)
+        self.assertEqual(len(rec["records"]), 1)
+        self.assertEqual(rec["records"][0]["delivery_state"], "pending")
+        intent_id = derived[0]["intent_id"]
+
+        failed = record_delivery_result(rec["records"], [intent_id], {"success": False, "attempted_at": "2030-01-02T12:05:00Z"})
+        self.assertEqual(failed[0]["delivery_state"], "failed")
+
+        curr_next = sample_state(current_value=90.0, historical_low=90.0, observed_at="2030-01-02T13:00:00Z")
+        rec_next = reconcile_delivery_state(failed, [], curr_next)
+        actionable = rec_next.get("actionableIntents") or rec_next.get("actionable_intents")
+        self.assertEqual(len(actionable), 1)
+
+        delivered = record_delivery_result(rec_next["records"], [intent_id], {"success": True, "attempted_at": "2030-01-02T13:05:00Z"})
+        self.assertEqual(delivered[0]["delivery_state"], "delivered")
 
 
 if __name__ == "__main__":

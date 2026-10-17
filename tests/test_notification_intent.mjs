@@ -4,8 +4,12 @@ import test from "node:test";
 import {
   INTENT_CONTRACT_VERSION,
   deriveIntents,
+  evaluateIntentActionability,
   groupIntents,
   intentFingerprint,
+  recordDeliveryResult,
+  reconcileDeliveryState,
+  safeDeliveryRecord,
   safeIntentPayload,
 } from "../src/notification-intent.mjs";
 
@@ -433,6 +437,185 @@ test("safe payload contains no persisted delivery acknowledgement or retry state
   });
   for (const field of ["pending", "delivered", "retry_count", "last_attempt_at", "delivered_at", "transport_state"]) {
     assert.equal(Object.hasOwn(payload, field), false);
+  }
+});
+
+test("new-low intent + delivery success -> delivered once", () => {
+  const prev = state({ current_value: 100, historical_low: 100 });
+  const curr = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derived = deriveIntents(prev, curr, { new_low: { enabled: true } });
+  assert.equal(derived.length, 1);
+
+  const reconciled = reconcileDeliveryState([], derived, curr);
+  assert.equal(reconciled.records.length, 1);
+  assert.equal(reconciled.records[0].delivery_state, "pending");
+
+  const recorded = recordDeliveryResult(reconciled.records, [derived[0].intent_id], { success: true, attempted_at: "2030-01-02T12:05:00Z" });
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].delivery_state, "delivered");
+  assert.equal(recorded[0].attempt_count, 1);
+  assert.equal(recorded[0].delivered_at, "2030-01-02T12:05:00Z");
+});
+
+test("new-low intent + delivery fail -> observation history persists, intent remains pending", () => {
+  const prev = state({ current_value: 100, historical_low: 100 });
+  const curr = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derived = deriveIntents(prev, curr, { new_low: { enabled: true } });
+
+  const reconciled = reconcileDeliveryState([], derived, curr);
+  const failed = recordDeliveryResult(reconciled.records, [derived[0].intent_id], { success: false, attempted_at: "2030-01-02T12:05:00Z" });
+  assert.equal(failed[0].delivery_state, "failed");
+  assert.equal(failed[0].attempt_count, 1);
+});
+
+test("same price next run + pending intent -> retry despite no longer being raw-history new low", () => {
+  const prevRun1 = state({ current_value: 100, historical_low: 100 });
+  const currRun1 = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derivedRun1 = deriveIntents(prevRun1, currRun1, { new_low: { enabled: true } });
+
+  const recRun1 = reconcileDeliveryState([], derivedRun1, currRun1);
+  const failedRun1 = recordDeliveryResult(recRun1.records, [derivedRun1[0].intent_id], { success: false, attempted_at: "2030-01-02T12:05:00Z" });
+
+  // Run 2: History has advanced (prior historical low is now 90), current price is 90
+  const prevRun2 = state({ current_value: 90, historical_low: 90 });
+  const currRun2 = state({ current_value: 90, historical_low: 90, observed_at: "2030-01-02T13:00:00Z" });
+  const derivedRun2 = deriveIntents(prevRun2, currRun2, { new_low: { enabled: true } });
+  assert.equal(derivedRun2.length, 0); // No raw transition in run 2!
+
+  // Reconcile run 1's failed record against run 2
+  const recRun2 = reconcileDeliveryState(failedRun1, derivedRun2, currRun2);
+  assert.equal(recRun2.actionableIntents.length, 1);
+  assert.equal(recRun2.actionableIntents[0].intent_id, derivedRun1[0].intent_id);
+  assert.equal(recRun2.actionableIntents[0].observed_at, currRun1.observed_at); // Preserved original context!
+});
+
+test("retry success -> exactly one delivered state, no further duplicate", () => {
+  const prevRun1 = state({ current_value: 100, historical_low: 100 });
+  const currRun1 = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derivedRun1 = deriveIntents(prevRun1, currRun1, { new_low: { enabled: true } });
+
+  const recRun1 = reconcileDeliveryState([], derivedRun1, currRun1);
+  const failedRun1 = recordDeliveryResult(recRun1.records, [derivedRun1[0].intent_id], { success: false });
+
+  const currRun2 = state({ current_value: 90, historical_low: 90, observed_at: "2030-01-02T13:00:00Z" });
+  const recRun2 = reconcileDeliveryState(failedRun1, [], currRun2);
+  const deliveredRun2 = recordDeliveryResult(recRun2.records, [derivedRun1[0].intent_id], { success: true, attempted_at: "2030-01-02T13:05:00Z" });
+
+  assert.equal(deliveredRun2.length, 1);
+  assert.equal(deliveredRun2[0].delivery_state, "delivered");
+
+  // Run 3: Reconcile again, should have 0 actionable intents
+  const currRun3 = state({ current_value: 90, historical_low: 90, observed_at: "2030-01-02T14:00:00Z" });
+  const recRun3 = reconcileDeliveryState(deliveredRun2, [], currRun3);
+  assert.equal(recRun3.actionableIntents.length, 0);
+  assert.equal(recRun3.records.length, 1);
+});
+
+test("repeated retry failure -> no duplicate intent explosion", () => {
+  const prev = state({ current_value: 100, historical_low: 100 });
+  const curr = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derived = deriveIntents(prev, curr, { new_low: { enabled: true } });
+
+  let records = reconcileDeliveryState([], derived, curr).records;
+  for (let i = 0; i < 5; i++) {
+    const rec = reconcileDeliveryState(records, [], state({ current_value: 90, historical_low: 90, observed_at: `2030-01-02T1${i}:00:00Z` }));
+    assert.equal(rec.records.length, 1);
+    assert.equal(rec.actionableIntents.length, 1);
+    records = recordDeliveryResult(rec.records, [derived[0].intent_id], { success: false });
+  }
+  assert.equal(records.length, 1);
+  assert.equal(records[0].attempt_count, 5);
+});
+
+test("price rises before retry -> original drop intent superseded/not sent as current advice", () => {
+  const prevRun1 = state({ current_value: 100, historical_low: 100 });
+  const currRun1 = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derivedRun1 = deriveIntents(prevRun1, currRun1, { new_low: { enabled: true } });
+
+  const recRun1 = reconcileDeliveryState([], derivedRun1, currRun1);
+  const failedRun1 = recordDeliveryResult(recRun1.records, [derivedRun1[0].intent_id], { success: false });
+
+  // Run 2: Price rises to 110
+  const currRun2 = state({ current_value: 110, historical_low: 90, observed_at: "2030-01-02T13:00:00Z" });
+  const recRun2 = reconcileDeliveryState(failedRun1, [], currRun2);
+
+  assert.equal(recRun2.actionableIntents.length, 0); // Not sent!
+  assert.equal(recRun2.records[0].delivery_state, "superseded");
+  assert.equal(recRun2.records[0].superseded_reason, "price_increased");
+});
+
+test("restock intent + delivery fail -> current availability history persists, intent remains pending", () => {
+  const prevRun1 = state({ availability_state: "unavailable", freshness: "fresh" });
+  const currRun1 = state({ availability_state: "available", freshness: "fresh", availability_generation: "r1" });
+  const derivedRun1 = deriveIntents(prevRun1, currRun1, { availability: { enabled: true } });
+
+  const recRun1 = reconcileDeliveryState([], derivedRun1, currRun1);
+  const failedRun1 = recordDeliveryResult(recRun1.records, [derivedRun1[0].intent_id], { success: false });
+  assert.equal(failedRun1[0].delivery_state, "failed");
+
+  // Next run: still available
+  const currRun2 = state({ availability_state: "available", freshness: "fresh", availability_generation: "r1", observed_at: "2030-01-02T13:00:00Z" });
+  const recRun2 = reconcileDeliveryState(failedRun1, [], currRun2);
+  assert.equal(recRun2.actionableIntents.length, 1);
+  assert.equal(recRun2.actionableIntents[0].intent_id, derivedRun1[0].intent_id);
+});
+
+test("provider failure is distinct from notification delivery failure", () => {
+  const prevRun1 = state({ current_value: 100, historical_low: 100 });
+  const currRun1 = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derivedRun1 = deriveIntents(prevRun1, currRun1, { new_low: { enabled: true } });
+
+  const recRun1 = reconcileDeliveryState([], derivedRun1, currRun1);
+  const failedRun1 = recordDeliveryResult(recRun1.records, [derivedRun1[0].intent_id], { success: false });
+
+  // Next run: Provider check failed (freshness="failed")
+  const currRun2 = state({ freshness: "failed", current_value: null, comparable: false });
+  const recRun2 = reconcileDeliveryState(failedRun1, [], currRun2);
+
+  // Intent is not superseded by provider error! It stays pending/unverifiable
+  assert.equal(recRun2.records[0].delivery_state, "failed");
+  assert.equal(recRun2.actionableIntents.length, 1);
+});
+
+test("transport succeeds but delivery-state persistence fails -> deterministic idempotency/reconciliation prevents spam", () => {
+  const prev = state({ current_value: 100, historical_low: 100 });
+  const curr = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derived = deriveIntents(prev, curr, { new_low: { enabled: true } });
+
+  // Transport succeeds and delivers:
+  const rec = reconcileDeliveryState([], derived, curr);
+  const delivered = recordDeliveryResult(rec.records, [derived[0].intent_id], { success: true });
+
+  // If local persistence failed and the run re-reconciles with existing delivered records:
+  const reRec = reconcileDeliveryState(delivered, derived, curr);
+  assert.equal(reRec.actionableIntents.length, 0); // Deduplicated! Won't resend
+  assert.equal(reRec.records[0].delivery_state, "delivered");
+});
+
+test("suppressed/proof-mode alerts are not accidentally treated as failed production deliveries", () => {
+  const prev = state({ current_value: 100, historical_low: 100 });
+  const curr = state({ current_value: 90, historical_low: 90, price_generation: "90" });
+  const derived = deriveIntents(prev, curr, { new_low: { enabled: true } });
+
+  const rec = reconcileDeliveryState([], derived, curr, { proof_mode: true });
+  assert.equal(rec.records[0].delivery_state, "delivered");
+  assert.equal(rec.actionableIntents.length, 0); // No pending delivery work queued as failed
+});
+
+test("safe serialized intent/delivery state contains no credential, raw provider payload, reservation ID, passenger name, notification endpoint, or payment data", () => {
+  const record = safeDeliveryRecord({
+    delivery_state: "pending",
+    intent: {
+      subject_key: "subject:synthetic",
+      event_type: "new_low",
+      semantic_generation: "p90",
+      current_value: 90,
+    },
+  });
+
+  const jsonStr = JSON.stringify(record);
+  for (const forbidden of ["password", "secret", "token", "credential", "cookie", "session", "reservation", "booking", "passenger", "payment", "apprise", "destination", "raw_provider", "protected_url"]) {
+    assert.equal(jsonStr.toLowerCase().includes(forbidden), false, `Delivery record contains forbidden pattern ${forbidden}`);
   }
 });
 
