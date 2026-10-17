@@ -443,16 +443,34 @@ class DeliveryStore:
             raise ValueError("provider run timestamp is required")
         self.ensure_schema()
         outcome = "started" if success is None else ("success" if success else "provider_failed")
-        self.base.d1_request([{
-            "sql": """
-            INSERT INTO notification_observation_runs_v1(
-              household_id,sailing_id,run_at,outcome
-            ) VALUES(?,?,?,?)
-            ON CONFLICT(household_id,sailing_id,run_at)
-            DO UPDATE SET outcome=excluded.outcome
-            """,
-            "params": [self.household_id, self.sailing_id, when, outcome],
-        }])
+        if success is None:
+            # A provider-run key is a single-use lifecycle. A new start must never
+            # overwrite/reuse an existing run key, because an earlier success may already
+            # have a confirmation artifact attached to that identity.
+            write_rows = self.base.d1_request([{
+                "sql": """
+                INSERT OR IGNORE INTO notification_observation_runs_v1(
+                  household_id,sailing_id,run_at,outcome
+                ) VALUES(?,?,?,'started')
+                """,
+                "params": [self.household_id, self.sailing_id, when],
+            }])
+        else:
+            # Outcomes transition exactly once from started. A duplicate/reused key or
+            # retry after an ambiguous update cannot promote an older confirmation into
+            # a newer lifecycle because the guarded update must change one started row.
+            write_rows = self.base.d1_request([{
+                "sql": """
+                UPDATE notification_observation_runs_v1
+                   SET outcome=?
+                 WHERE household_id=? AND sailing_id=? AND run_at=?
+                   AND outcome='started'
+                """,
+                "params": [outcome, self.household_id, self.sailing_id, when],
+            }])
+        if _changes(write_rows) != 1:
+            return False
+
         rows = self.base.d1_request([{
             "sql": """
             SELECT outcome

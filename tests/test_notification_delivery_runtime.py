@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import sqlite3
 import sys
 import unittest
 from types import SimpleNamespace
@@ -239,11 +240,12 @@ class DeliveryStoreTests(unittest.TestCase):
         self.assertTrue(store.record_provider_run("2030-01-02T12:00:00Z", None))
         self.assertTrue(any("notification_observation_runs_v1" in q["sql"] for q in base.calls[0]))
         insert = base.calls[1][0]
-        self.assertIn("ON CONFLICT(household_id,sailing_id,run_at)", insert["sql"])
-        self.assertEqual(insert["params"], ["primary", "synthetic-sailing", "2030-01-02T12:00:00Z", "started"])
+        self.assertIn("INSERT OR IGNORE INTO notification_observation_runs_v1", insert["sql"])
+        self.assertEqual(insert["params"], ["primary", "synthetic-sailing", "2030-01-02T12:00:00Z"])
         self.assertIn("SELECT outcome", base.calls[2][0]["sql"])
         self.assertTrue(store.record_provider_run("2030-01-02T12:00:00Z", False))
-        self.assertEqual(base.calls[4][0]["params"][-1], "provider_failed")
+        self.assertEqual(base.calls[4][0]["params"][0], "provider_failed")
+        self.assertIn("outcome='started'", base.calls[4][0]["sql"])
 
     def test_provider_run_readback_mismatch_fails_confirmation(self):
         base = ScriptedD1Base([
@@ -253,6 +255,43 @@ class DeliveryStoreTests(unittest.TestCase):
         ])
         store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
         self.assertFalse(store.record_provider_run("2030-01-02T12:00:00Z", None))
+
+    def test_provider_run_key_is_single_use_with_real_sqlite_lifecycle(self):
+        class SqliteBase:
+            SAILING_ID = "synthetic-sailing"
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            @classmethod
+            def d1_request(cls, batch):
+                result = []
+                for query in batch:
+                    before = cls.conn.total_changes
+                    cursor = cls.conn.execute(query["sql"], query.get("params") or [])
+                    rows = [dict(row) for row in cursor.fetchall()]
+                    cls.conn.commit()
+                    result.append({"success": True, "results": rows, "meta": {"changes": cls.conn.total_changes - before}})
+                return result
+            @staticmethod
+            def booking_id(_profile): return "synthetic-booking"
+
+        store = delivery.DeliveryStore(SqliteBase, SimpleNamespace(label="primary"))
+        run_at = "2030-01-02T12:00:00Z"
+        self.assertTrue(store.record_provider_run(run_at, None))
+        self.assertTrue(store.record_provider_run(run_at, True))
+        # A confirmed success may not be reset/reused as a new provider lifecycle.
+        self.assertFalse(store.record_provider_run(run_at, None))
+        self.assertFalse(store.record_provider_run(run_at, True))
+        outcome = SqliteBase.conn.execute(
+            "SELECT outcome FROM notification_observation_runs_v1 WHERE household_id=? AND sailing_id=? AND run_at=?",
+            ("primary", "synthetic-sailing", run_at),
+        ).fetchone()[0]
+        confirmations = SqliteBase.conn.execute(
+            "SELECT COUNT(*) FROM notification_observation_run_confirmations_v1 WHERE household_id=? AND sailing_id=? AND run_at=?",
+            ("primary", "synthetic-sailing", run_at),
+        ).fetchone()[0]
+        self.assertEqual(outcome, "success")
+        self.assertEqual(confirmations, 1)
+        SqliteBase.conn.close()
 
     def test_success_confirmation_artifact_written_only_after_matching_readback(self):
         base = ScriptedD1Base([
