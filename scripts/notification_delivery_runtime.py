@@ -69,6 +69,21 @@ CREATE INDEX IF NOT EXISTS idx_notification_observation_runs_v1
   ON notification_observation_runs_v1(household_id,sailing_id,run_at)
 """
 
+_PROVIDER_RUN_CONFIRM_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS notification_observation_run_confirmations_v1 (
+  household_id TEXT NOT NULL,
+  sailing_id TEXT NOT NULL,
+  run_at TEXT NOT NULL,
+  confirmed_outcome TEXT NOT NULL CHECK (confirmed_outcome IN ('success')),
+  PRIMARY KEY(household_id,sailing_id,run_at)
+)
+"""
+
+_PROVIDER_RUN_CONFIRM_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_notification_observation_run_confirmations_v1
+  ON notification_observation_run_confirmations_v1(household_id,sailing_id,run_at)
+"""
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -409,6 +424,8 @@ class DeliveryStore:
             {"sql": _INDEX_SQL, "params": []},
             {"sql": _PROVIDER_RUN_SCHEMA_SQL, "params": []},
             {"sql": _PROVIDER_RUN_INDEX_SQL, "params": []},
+            {"sql": _PROVIDER_RUN_CONFIRM_SCHEMA_SQL, "params": []},
+            {"sql": _PROVIDER_RUN_CONFIRM_INDEX_SQL, "params": []},
         ])
 
     def record_provider_run(self, run_at: str, success: bool | None) -> bool:
@@ -446,7 +463,24 @@ class DeliveryStore:
             "params": [self.household_id, self.sailing_id, when],
         }])
         result = (rows[0].get("results") or []) if rows else []
-        return bool(result and str(result[0].get("outcome") or "") == outcome)
+        if not (result and str(result[0].get("outcome") or "") == outcome):
+            return False
+
+        if success is True:
+            # The confirmation artifact is written only after the success outcome has
+            # been read back. Replay requires this second durable fact, so an ambiguous
+            # success write/readback can never become a trusted restock endpoint. If this
+            # insert itself is response-ambiguous but reaches D1, it is still safe: the
+            # control path could only attempt it after a verified success readback.
+            self.base.d1_request([{
+                "sql": """
+                INSERT OR IGNORE INTO notification_observation_run_confirmations_v1(
+                  household_id,sailing_id,run_at,confirmed_outcome
+                ) VALUES(?,?,?,'success')
+                """,
+                "params": [self.household_id, self.sailing_id, when],
+            }])
+        return True
 
     def availability_contiguous(self, product_id: str, role: str, current_observed_at: str) -> bool:
         """Prove the previous unavailable observation is from the immediately prior provider run."""
@@ -470,9 +504,19 @@ class DeliveryStore:
                            AND r.run_at=p.observed_at AND r.outcome='success'
                       )
                       AND EXISTS (
+                        SELECT 1 FROM notification_observation_run_confirmations_v1 c
+                         WHERE c.household_id=? AND c.sailing_id=?
+                           AND c.run_at=p.observed_at AND c.confirmed_outcome='success'
+                      )
+                      AND EXISTS (
                         SELECT 1 FROM notification_observation_runs_v1 r
                          WHERE r.household_id=? AND r.sailing_id=?
                            AND r.run_at=? AND r.outcome='success'
+                      )
+                      AND EXISTS (
+                        SELECT 1 FROM notification_observation_run_confirmations_v1 c
+                         WHERE c.household_id=? AND c.sailing_id=?
+                           AND c.run_at=? AND c.confirmed_outcome='success'
                       )
                       AND NOT EXISTS (
                         SELECT 1 FROM notification_observation_runs_v1 r
@@ -487,6 +531,8 @@ class DeliveryStore:
             "params": [
                 self.household_id, self.sailing_id, bid, product_id, role, current_observed_at,
                 self.household_id, self.sailing_id,
+                self.household_id, self.sailing_id,
+                self.household_id, self.sailing_id, current_observed_at,
                 self.household_id, self.sailing_id, current_observed_at,
                 self.household_id, self.sailing_id, current_observed_at,
             ],

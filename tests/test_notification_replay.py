@@ -170,6 +170,7 @@ class ReplayTests(unittest.TestCase):
         self.assertIn("julianday(observed_at)>=julianday(?)", price_sql)
         self.assertIn("julianday(s.observed_at)>=julianday(?)", availability_sql)
         self.assertIn("notification_observation_runs_v1", availability_sql)
+        self.assertIn("notification_observation_run_confirmations_v1", availability_sql)
         self.assertIn("prior_observed_at", availability_sql)
         self.assertIn("NOT EXISTS", availability_sql)
         self.assertIn("continuity_proven", availability_sql)
@@ -219,6 +220,9 @@ class ReplayTests(unittest.TestCase):
         CREATE TABLE notification_observation_runs_v1(
           household_id TEXT,sailing_id TEXT,run_at TEXT,outcome TEXT
         );
+        CREATE TABLE notification_observation_run_confirmations_v1(
+          household_id TEXT,sailing_id TEXT,run_at TEXT,confirmed_outcome TEXT
+        );
         """)
         common = (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id, "authenticated_royal", "adult")
         conn.execute("INSERT INTO price_snapshots VALUES(1,?,?,?,?,?,?,?,?,?,?)", (*common, 100.0, 300.0, None, "2030-01-02T10:00:00+00:00"))
@@ -263,6 +267,9 @@ class ReplayTests(unittest.TestCase):
         CREATE TABLE notification_observation_runs_v1(
           household_id TEXT,sailing_id TEXT,run_at TEXT,outcome TEXT
         );
+        CREATE TABLE notification_observation_run_confirmations_v1(
+          household_id TEXT,sailing_id TEXT,run_at TEXT,confirmed_outcome TEXT
+        );
         """)
         before = "2030-01-02T10:00:00+00:00"
         gap = "2030-01-02T11:00:00+00:00"
@@ -285,6 +292,10 @@ class ReplayTests(unittest.TestCase):
                 "INSERT INTO notification_observation_runs_v1 VALUES(?,?,?,?)",
                 (PROFILE.label, Base.SAILING_ID, run_at, outcome),
             )
+            conn.execute(
+                "INSERT INTO notification_observation_run_confirmations_v1 VALUES(?,?,?,?)",
+                (PROFILE.label, Base.SAILING_ID, run_at, "success"),
+            )
         conn.commit()
 
         adjacent = replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive)
@@ -301,6 +312,65 @@ class ReplayTests(unittest.TestCase):
             conn.execute("DELETE FROM notification_observation_runs_v1 WHERE run_at=?", (gap,))
             conn.commit()
 
+        conn.close()
+
+    def test_success_row_without_post_readback_confirmation_cannot_replay_restock(self):
+        class SqliteBase(Base):
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            @classmethod
+            def d1_request(cls, batch):
+                result = []
+                for query in batch:
+                    cursor = cls.conn.execute(query["sql"], query.get("params") or [])
+                    cls.conn.commit()
+                    result.append({"success": True, "results": [dict(row) for row in cursor.fetchall()]})
+                return result
+
+        conn = SqliteBase.conn
+        conn.executescript("""
+        CREATE TABLE price_snapshots(
+          id INTEGER PRIMARY KEY,household_id TEXT,sailing_id TEXT,booking_id TEXT,
+          product_id TEXT,source TEXT,passenger_class TEXT,observed_price REAL,
+          normalized_total REAL,promotion_label TEXT,observed_at TEXT
+        );
+        CREATE TABLE purchases(
+          product_id TEXT,passenger_scope TEXT,paid_unit_price REAL,paid_total REAL,
+          currency TEXT,household_id TEXT,sailing_id TEXT,booking_id TEXT,active INTEGER
+        );
+        CREATE TABLE products(id TEXT,name TEXT,prefix TEXT,price_unit TEXT);
+        CREATE TABLE product_availability(
+          id INTEGER PRIMARY KEY,household_id TEXT,sailing_id TEXT,booking_id TEXT,
+          product_id TEXT,passenger_class TEXT,status TEXT,observed_at TEXT
+        );
+        CREATE TABLE notification_observation_runs_v1(
+          household_id TEXT,sailing_id TEXT,run_at TEXT,outcome TEXT
+        );
+        CREATE TABLE notification_observation_run_confirmations_v1(
+          household_id TEXT,sailing_id TEXT,run_at TEXT,confirmed_outcome TEXT
+        );
+        """)
+        before = "2030-01-02T10:00:00+00:00"
+        current = "2030-01-02T12:00:00+00:00"
+        common = (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id, "adult")
+        conn.execute("INSERT INTO product_availability VALUES(1,?,?,?,?,?,?,?)", (*common, "sold_out", before))
+        conn.execute("INSERT INTO product_availability VALUES(2,?,?,?,?,?,?,?)", (*common, "available", current))
+        conn.execute("INSERT INTO price_snapshots VALUES(1,?,?,?,?,?,?,?,?,?,?)", (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id, "authenticated_royal", "adult", 75.0, 225.0, None, current))
+        for run_at in (before, current):
+            conn.execute("INSERT INTO notification_observation_runs_v1 VALUES(?,?,?,?)", (PROFILE.label, Base.SAILING_ID, run_at, "success"))
+        # Prior endpoint was fully confirmed; current outcome exists but has no
+        # confirmation artifact, modeling write-applied/readback-failed ambiguity.
+        conn.execute("INSERT INTO notification_observation_run_confirmations_v1 VALUES(?,?,?,?)", (PROFILE.label, Base.SAILING_ID, before, "success"))
+        conn.commit()
+        with patch.object(replay, "replay_floor_iso", return_value="2030-01-01T00:00:00+00:00"):
+            blocked = replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive)
+        self.assertFalse(any(item["alert"]["kind"] == "availability_return" for item in blocked))
+
+        conn.execute("INSERT INTO notification_observation_run_confirmations_v1 VALUES(?,?,?,?)", (PROFILE.label, Base.SAILING_ID, current, "success"))
+        conn.commit()
+        with patch.object(replay, "replay_floor_iso", return_value="2030-01-01T00:00:00+00:00"):
+            allowed = replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive)
+        self.assertTrue(any(item["alert"]["kind"] == "availability_return" for item in allowed))
         conn.close()
 
     def test_legacy_delivery_suppresses_rollout_duplicate(self):

@@ -300,9 +300,19 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
                    AND r.run_at=s.prior_observed_at AND r.outcome='success'
               )
               AND EXISTS (
+                SELECT 1 FROM notification_observation_run_confirmations_v1 c
+                 WHERE c.household_id=? AND c.sailing_id=?
+                   AND c.run_at=s.prior_observed_at AND c.confirmed_outcome='success'
+              )
+              AND EXISTS (
                 SELECT 1 FROM notification_observation_runs_v1 r
                  WHERE r.household_id=? AND r.sailing_id=?
                    AND r.run_at=s.observed_at AND r.outcome='success'
+              )
+              AND EXISTS (
+                SELECT 1 FROM notification_observation_run_confirmations_v1 c
+                 WHERE c.household_id=? AND c.sailing_id=?
+                   AND c.run_at=s.observed_at AND c.confirmed_outcome='success'
               )
               AND NOT EXISTS (
                 SELECT 1 FROM notification_observation_runs_v1 r
@@ -344,6 +354,8 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
             "sql": availability_sql,
             "params": [
                 *common,
+                profile.label, base.SAILING_ID,
+                profile.label, base.SAILING_ID,
                 profile.label, base.SAILING_ID,
                 profile.label, base.SAILING_ID,
                 profile.label, base.SAILING_ID,

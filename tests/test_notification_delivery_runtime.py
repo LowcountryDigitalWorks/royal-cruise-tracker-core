@@ -213,6 +213,7 @@ class DeliveryStoreTests(unittest.TestCase):
             self.assertEqual(store.availability_contiguous("beverage:demo:adult", "adult", "2030-01-02T12:00:00Z"), expected)
             sql = base.calls[0][0]["sql"]
             self.assertIn("notification_observation_runs_v1", sql)
+            self.assertIn("notification_observation_run_confirmations_v1", sql)
             self.assertIn("NOT EXISTS", sql)
 
     def test_release_claim_is_attempt_guarded_and_returns_pending(self):
@@ -227,10 +228,10 @@ class DeliveryStoreTests(unittest.TestCase):
 
     def test_record_provider_run_uses_sanitized_continuity_table(self):
         base = ScriptedD1Base([
-            [{"success": True, "meta": {"changes": 0}}] * 4,
+            [{"success": True, "meta": {"changes": 0}}] * 6,
             [{"success": True, "meta": {"changes": 1}}],
             [{"results": [{"outcome": "started"}]}],
-            [{"success": True, "meta": {"changes": 0}}] * 4,
+            [{"success": True, "meta": {"changes": 0}}] * 6,
             [{"success": True, "meta": {"changes": 1}}],
             [{"results": [{"outcome": "provider_failed"}]}],
         ])
@@ -246,12 +247,36 @@ class DeliveryStoreTests(unittest.TestCase):
 
     def test_provider_run_readback_mismatch_fails_confirmation(self):
         base = ScriptedD1Base([
-            [{"success": True, "meta": {"changes": 0}}] * 4,
+            [{"success": True, "meta": {"changes": 0}}] * 6,
             [{"success": True, "meta": {"changes": 1}}],
             [{"results": [{"outcome": "provider_failed"}]}],
         ])
         store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
         self.assertFalse(store.record_provider_run("2030-01-02T12:00:00Z", None))
+
+    def test_success_confirmation_artifact_written_only_after_matching_readback(self):
+        base = ScriptedD1Base([
+            [{"success": True, "meta": {"changes": 0}}] * 6,
+            [{"success": True, "meta": {"changes": 1}}],
+            [{"results": [{"outcome": "success"}]}],
+            [{"success": True, "meta": {"changes": 1}}],
+        ])
+        store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
+        self.assertTrue(store.record_provider_run("2030-01-02T12:00:00Z", True))
+        confirm = base.calls[3][0]
+        self.assertIn("notification_observation_run_confirmations_v1", confirm["sql"])
+        self.assertEqual(confirm["params"], ["primary", "synthetic-sailing", "2030-01-02T12:00:00Z"])
+
+    def test_success_readback_mismatch_never_writes_confirmation_artifact(self):
+        base = ScriptedD1Base([
+            [{"success": True, "meta": {"changes": 0}}] * 6,
+            [{"success": True, "meta": {"changes": 1}}],
+            [{"results": [{"outcome": "started"}]}],
+        ])
+        store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
+        self.assertFalse(store.record_provider_run("2030-01-02T12:00:00Z", True))
+        self.assertEqual(len(base.calls), 3)
+        self.assertFalse(any("notification_observation_run_confirmations_v1" in q["sql"] for batch in base.calls[1:] for q in batch))
 
     def test_known_failure_returns_dispatching_attempt_to_retryable_failed(self):
         base = ScriptedD1Base([[{"success": True, "meta": {"changes": 1}}]])
