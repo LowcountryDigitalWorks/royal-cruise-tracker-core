@@ -146,3 +146,5 @@ A deployment should prove deterministic parity first. Only then may the owning w
 ### ALERT-REL-001 continuity and grouped-claim invariant
 
 The source runtime records sanitized provider-run success/failure continuity separately from product observations so replay cannot infer restock across an acquisition gap. For consolidated notification transport, every eligible constituent must be durably claimed before any send; partial claims are released with attempt-guarded writes and transport fails closed.
+
+Provider-run continuity uses a durable pre-acquisition `started` marker updated to `success` or `provider_failed` on the same run key. Successful acquisition is marked before parsing/derivation; a raised provider call or raised parser therefore cannot disappear between availability observations, and an outcome-write failure leaves the `started` marker as a fail-closed continuity break.

@@ -229,13 +229,17 @@ class DeliveryStoreTests(unittest.TestCase):
         base = ScriptedD1Base([
             [{"success": True, "meta": {"changes": 0}}] * 4,
             [{"success": True, "meta": {"changes": 1}}],
+            [{"success": True, "meta": {"changes": 0}}] * 4,
+            [{"success": True, "meta": {"changes": 1}}],
         ])
         store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
-        store.record_provider_run("2030-01-02T12:00:00Z", False)
+        store.record_provider_run("2030-01-02T12:00:00Z", None)
         self.assertTrue(any("notification_observation_runs_v1" in q["sql"] for q in base.calls[0]))
         insert = base.calls[1][0]
-        self.assertIn("INSERT OR IGNORE INTO notification_observation_runs_v1", insert["sql"])
-        self.assertEqual(insert["params"], ["primary", "synthetic-sailing", "2030-01-02T12:00:00Z", "provider_failed"])
+        self.assertIn("ON CONFLICT(household_id,sailing_id,run_at)", insert["sql"])
+        self.assertEqual(insert["params"], ["primary", "synthetic-sailing", "2030-01-02T12:00:00Z", "started"])
+        store.record_provider_run("2030-01-02T12:00:00Z", False)
+        self.assertEqual(base.calls[3][0]["params"][-1], "provider_failed")
 
     def test_known_failure_returns_dispatching_attempt_to_retryable_failed(self):
         base = ScriptedD1Base([[{"success": True, "meta": {"changes": 1}}]])
@@ -383,6 +387,33 @@ class MainOrderingTests(unittest.TestCase):
                 events.append("summary")
 
         return Base, Adaptive
+
+    def test_provider_exception_records_started_then_failed_before_reraising(self):
+        events = []
+        Base, Adaptive = self._modules(events)
+        Base.run_upstream = staticmethod(lambda *_args: (_ for _ in ()).throw(RuntimeError("synthetic provider exception")))
+        class Store:
+            def __init__(self, *_args): pass
+            def record_provider_run(self, run_at, success): events.append(("marker", run_at, success))
+        with self.assertRaisesRegex(RuntimeError, "synthetic provider exception"):
+            delivery.main(Adaptive, Base, store_factory=Store)
+        markers = [e for e in events if isinstance(e, tuple) and e[0] == "marker"]
+        self.assertEqual([m[2] for m in markers], [None, False])
+        self.assertEqual(markers[0][1], markers[1][1])
+
+    def test_success_marker_precedes_parse_and_parse_exception_leaves_success_gap_marker(self):
+        events = []
+        Base, Adaptive = self._modules(events)
+        Base.parse_history = staticmethod(lambda *_args: (_ for _ in ()).throw(RuntimeError("synthetic parse exception")))
+        class Store:
+            def __init__(self, *_args): pass
+            def record_provider_run(self, run_at, success): events.append(("marker", run_at, success))
+        with self.assertRaisesRegex(RuntimeError, "synthetic parse exception"):
+            delivery.main(Adaptive, Base, store_factory=Store)
+        markers = [e for e in events if isinstance(e, tuple) and e[0] == "marker"]
+        self.assertEqual([m[2] for m in markers], [None, True])
+        self.assertEqual(markers[0][1], markers[1][1])
+        self.assertLess(events.index(markers[1]), len(events))
 
     def test_initial_intent_write_failure_retries_same_id_after_history_persists(self):
         events = []

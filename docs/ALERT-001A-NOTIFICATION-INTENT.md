@@ -188,3 +188,5 @@ Public Core CI must run these tests in addition to all existing repository gates
 ### Final reliability gates
 
 Retained availability/restock replay is fail-closed unless sanitized provider-run continuity proves the unavailable and available observations came from adjacent successful provider runs; failed or intervening unobserved runs break continuity. Consolidated transport is also all-or-none: every eligible constituent intent must win its guarded pre-transport claim or no subset is sent; already-claimed rows are returned to retryable state with exact attempt-ID guards.
+
+Provider-run continuity uses a durable pre-acquisition `started` marker updated to `success` or `provider_failed` on the same run key. Successful acquisition is marked before parsing/derivation; a raised provider call or raised parser therefore cannot disappear between availability observations, and an outcome-write failure leaves the `started` marker as a fail-closed continuity break.

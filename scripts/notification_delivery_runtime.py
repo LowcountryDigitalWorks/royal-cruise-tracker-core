@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS notification_observation_runs_v1 (
   household_id TEXT NOT NULL,
   sailing_id TEXT NOT NULL,
   run_at TEXT NOT NULL,
-  outcome TEXT NOT NULL CHECK (outcome IN ('success','provider_failed')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('started','success','provider_failed')),
   PRIMARY KEY(household_id,sailing_id,run_at)
 )
 """
@@ -411,18 +411,26 @@ class DeliveryStore:
             {"sql": _PROVIDER_RUN_INDEX_SQL, "params": []},
         ])
 
-    def record_provider_run(self, run_at: str, success: bool) -> None:
-        """Persist sanitized provider-run continuity independently of product observations."""
+    def record_provider_run(self, run_at: str, success: bool | None) -> None:
+        """Persist sanitized provider-run continuity independently of product observations.
+
+        ``success=None`` records a pre-acquisition ``started`` marker. The same marker is
+        then compare-key updated to ``success`` or ``provider_failed``. If outcome update
+        later fails, the durable ``started`` row still breaks restock continuity rather
+        than silently making two availability observations look adjacent.
+        """
         when = str(run_at or "").strip()
         if not when:
             raise ValueError("provider run timestamp is required")
         self.ensure_schema()
-        outcome = "success" if success else "provider_failed"
+        outcome = "started" if success is None else ("success" if success else "provider_failed")
         self.base.d1_request([{
             "sql": """
-            INSERT OR IGNORE INTO notification_observation_runs_v1(
+            INSERT INTO notification_observation_runs_v1(
               household_id,sailing_id,run_at,outcome
             ) VALUES(?,?,?,?)
+            ON CONFLICT(household_id,sailing_id,run_at)
+            DO UPDATE SET outcome=excluded.outcome
             """,
             "params": [self.household_id, self.sailing_id, when, outcome],
         }])
@@ -919,19 +927,42 @@ def main(
             print(f"::warning::Could not load adaptive D1 state for {profile.label}; using bounded fallback")
         cfg, watchlist, mode, selected = adaptive.build_config(profile, state)
 
+        # Establish a durable pre-acquisition marker before invoking Royal. This marker
+        # is deliberately independent of product/history writes: a later crash, provider
+        # exception, or outcome-write failure must break availability continuity rather
+        # than disappear between two persisted availability observations.
+        provider_run_at = utc_now_iso()
+        continuity_started = False
+        recorder = getattr(store, "record_provider_run", None)
+        if recorder is not None:
+            try:
+                recorder(provider_run_at, None)
+                continuity_started = True
+            except Exception:
+                print(f"::warning::Could not persist provider-start continuity marker for {profile.label}")
+                exit_code = max(exit_code, 1)
+
         import tempfile
         from pathlib import Path
-        with tempfile.TemporaryDirectory(prefix=f"royal-{profile.label}-") as tmp:
-            status, lines = base.run_upstream(profile, cfg, Path(tmp) / "config.json")
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"royal-{profile.label}-") as tmp:
+                status, lines = base.run_upstream(profile, cfg, Path(tmp) / "config.json")
+        except Exception:
+            # Preserve the existing exception/failure semantics, but first make the
+            # attempted provider run durable whenever D1 is available.
+            if recorder is not None:
+                try:
+                    recorder(provider_run_at, False)
+                except Exception:
+                    print(f"::warning::Could not persist provider-exception continuity marker for {profile.label}")
+            raise
         if status != 0:
             exit_code = status
-            failed_at = utc_now_iso()
-            try:
-                recorder = getattr(store, "record_provider_run", None)
-                if recorder is not None:
-                    recorder(failed_at, False)
-            except Exception:
-                print(f"::warning::Could not persist provider-failure continuity marker for {profile.label}")
+            if recorder is not None:
+                try:
+                    recorder(provider_run_at, False)
+                except Exception:
+                    print(f"::warning::Could not persist provider-failure continuity marker for {profile.label}")
             if profile.apprise_url:
                 base.send_apprise(
                     profile,
@@ -940,7 +971,21 @@ def main(
                 )
             continue
 
+        # Mark successful acquisition immediately, before parsing/derivation can raise.
+        # The exact provider-run timestamp becomes the observation timestamp so endpoint
+        # continuity markers and persisted availability evidence share one durable key.
+        provider_continuity_recorded = continuity_started
+        if recorder is not None:
+            try:
+                recorder(provider_run_at, True)
+                provider_continuity_recorded = True
+            except Exception:
+                provider_continuity_recorded = False
+                print(f"::warning::Could not persist provider-success continuity marker for {profile.label}")
+                exit_code = max(exit_code, 1)
+
         snapshot = base.parse_history(profile, watchlist, lines)
+        snapshot["observed_at"] = provider_run_at
         snapshot, quarantined_watch_rows = adaptive.reconcile_watch_snapshot(snapshot, state)
         if quarantined_watch_rows:
             print(
@@ -950,18 +995,7 @@ def main(
         purchases = adaptive.parse_purchases(profile, lines, snapshot["observed_at"])
         alerts = adaptive.build_alerts(profile, snapshot, purchases, state)
 
-        provider_continuity_recorded = True
-        current_observed_at = str(snapshot.get("observed_at") or utc_now_iso())
-        try:
-            recorder = getattr(store, "record_provider_run", None)
-            if recorder is not None:
-                recorder(current_observed_at, True)
-        except Exception:
-            # Missing continuity evidence must fail closed for restock, but does not
-            # suppress valid Royal observation/history persistence in this successful run.
-            provider_continuity_recorded = False
-            print(f"::warning::Could not persist provider-success continuity marker for {profile.label}")
-            exit_code = max(exit_code, 1)
+        current_observed_at = str(snapshot.get("observed_at") or provider_run_at)
 
         # v4 derives a current-run restock from the latest availability row. ALERT-REL-001
         # additionally requires provider-run adjacency: a failed or successful-but-unobserved
