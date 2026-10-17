@@ -184,3 +184,7 @@ A later separately authorized integration may adapt legacy alert dictionaries to
 - no environment/network/filesystem/clock/randomness access.
 
 Public Core CI must run these tests in addition to all existing repository gates before the release is review-ready.
+
+### Final reliability gates
+
+Retained availability/restock replay is fail-closed unless sanitized provider-run continuity proves the unavailable and available observations came from adjacent successful provider runs; failed or intervening unobserved runs break continuity. Consolidated transport is also all-or-none: every eligible constituent intent must win its guarded pre-transport claim or no subset is sent; already-claimed rows are returned to retryable state with exact attempt-ID guards.

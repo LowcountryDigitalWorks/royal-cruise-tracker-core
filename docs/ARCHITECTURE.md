@@ -142,3 +142,7 @@ Public-repository sanitization is distinct from private deployment observation s
 Public-core acceptance and production activation are separate phases.
 
 A deployment should prove deterministic parity first. Only then may the owning workstream propose provisioning the matching deployment secrets, changing a scheduler or production workflow target, or otherwise activating the accepted source, with explicit current/proposed/rollback evidence. Merging code alone does not create the dedicated proof key, update Cloudflare/GitHub secret state, or authorize production cutover.
+
+### ALERT-REL-001 continuity and grouped-claim invariant
+
+The source runtime records sanitized provider-run success/failure continuity separately from product observations so replay cannot infer restock across an acquisition gap. For consolidated notification transport, every eligible constituent must be durably claimed before any send; partial claims are released with attempt-guarded writes and transport fails closed.

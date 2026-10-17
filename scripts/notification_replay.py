@@ -191,6 +191,10 @@ def reconstruct_availability_candidates(
             continue
         if row.get("status") != "available" or row.get("prior_status") not in unavailable:
             continue
+        if int(row.get("continuity_proven") or 0) != 1:
+            # Availability replay is fail-closed unless the immediately preceding
+            # provider run is exactly the persisted unavailable observation.
+            continue
         current = _float(row.get("current_price"))
         spec = base.SPEC_BY_ID.get(product_id)
         if current is None or spec is None or role not in getattr(spec, "audience", ()):
@@ -265,13 +269,37 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
              LAG(status) OVER (
                PARTITION BY product_id,COALESCE(passenger_class,'all') ORDER BY id
              ) AS prior_status,
+             LAG(observed_at) OVER (
+               PARTITION BY product_id,COALESCE(passenger_class,'all') ORDER BY id
+             ) AS prior_observed_at,
              ROW_NUMBER() OVER (
                PARTITION BY product_id,COALESCE(passenger_class,'all') ORDER BY id DESC
              ) AS recency_rank
         FROM product_availability
        WHERE household_id=? AND sailing_id=? AND booking_id=?
     )
-    SELECT s.product_id,s.passenger_class,s.status,s.prior_status,s.observed_at,s.recency_rank,
+    SELECT s.product_id,s.passenger_class,s.status,s.prior_status,s.prior_observed_at,
+           s.observed_at,s.recency_rank,
+           CASE
+             WHEN s.prior_observed_at IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM notification_observation_runs_v1 r
+                 WHERE r.household_id=? AND r.sailing_id=?
+                   AND r.run_at=s.prior_observed_at AND r.outcome='success'
+              )
+              AND EXISTS (
+                SELECT 1 FROM notification_observation_runs_v1 r
+                 WHERE r.household_id=? AND r.sailing_id=?
+                   AND r.run_at=s.observed_at AND r.outcome='success'
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM notification_observation_runs_v1 r
+                 WHERE r.household_id=? AND r.sailing_id=?
+                   AND julianday(r.run_at)>julianday(s.prior_observed_at)
+                   AND julianday(r.run_at)<julianday(s.observed_at)
+              )
+             THEN 1 ELSE 0
+           END AS continuity_proven,
            (
              SELECT ps.observed_price
                FROM price_snapshots ps
@@ -301,7 +329,14 @@ def load_bounded_replay_candidates(profile: Any, base: Any, adaptive: Any) -> li
     try:
         availability_result = base.d1_request([{
             "sql": availability_sql,
-            "params": [*common, *common, *common],
+            "params": [
+                *common,
+                profile.label, base.SAILING_ID,
+                profile.label, base.SAILING_ID,
+                profile.label, base.SAILING_ID,
+                *common,
+                *common,
+            ],
         }])
         availability_rows = (availability_result[0].get("results") or []) if availability_result else []
     except Exception:

@@ -198,6 +198,45 @@ class DeliveryStoreTests(unittest.TestCase):
         }
         self.assertIsNone(store.claim(record))
 
+    def test_availability_contiguity_requires_adjacent_successful_provider_runs(self):
+        class ContinuityBase:
+            SAILING_ID = "synthetic-sailing"
+            @staticmethod
+            def booking_id(_profile): return "synthetic-booking"
+            def __init__(self, proven): self.proven, self.calls = proven, []
+            def d1_request(self, batch):
+                self.calls.append(batch)
+                return [{"results": [{"status":"sold_out","prior_observed_at":"2030-01-02T11:00:00Z","continuity_proven":self.proven}]}]
+        for proven, expected in [(1, True), (0, False)]:
+            base = ContinuityBase(proven)
+            store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
+            self.assertEqual(store.availability_contiguous("beverage:demo:adult", "adult", "2030-01-02T12:00:00Z"), expected)
+            sql = base.calls[0][0]["sql"]
+            self.assertIn("notification_observation_runs_v1", sql)
+            self.assertIn("NOT EXISTS", sql)
+
+    def test_release_claim_is_attempt_guarded_and_returns_pending(self):
+        base = ScriptedD1Base([[{"success": True, "meta": {"changes": 1}}]])
+        store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
+        record = {"intent_id": "ni1_demo", "attempt_id": "nda1_demo"}
+        self.assertTrue(store.release_claim(record))
+        sql = base.calls[0][0]["sql"]
+        self.assertIn("delivery_state='pending'", sql)
+        self.assertIn("delivery_state='dispatching' AND attempt_id=?", sql)
+        self.assertIn("attempt_id=NULL", sql)
+
+    def test_record_provider_run_uses_sanitized_continuity_table(self):
+        base = ScriptedD1Base([
+            [{"success": True, "meta": {"changes": 0}}] * 4,
+            [{"success": True, "meta": {"changes": 1}}],
+        ])
+        store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
+        store.record_provider_run("2030-01-02T12:00:00Z", False)
+        self.assertTrue(any("notification_observation_runs_v1" in q["sql"] for q in base.calls[0]))
+        insert = base.calls[1][0]
+        self.assertIn("INSERT OR IGNORE INTO notification_observation_runs_v1", insert["sql"])
+        self.assertEqual(insert["params"], ["primary", "synthetic-sailing", "2030-01-02T12:00:00Z", "provider_failed"])
+
     def test_known_failure_returns_dispatching_attempt_to_retryable_failed(self):
         base = ScriptedD1Base([[{"success": True, "meta": {"changes": 1}}]])
         store = delivery.DeliveryStore(base, SimpleNamespace(label="primary"))
@@ -402,6 +441,48 @@ class MainOrderingTests(unittest.TestCase):
         self.assertEqual(stage_events[0].split(":", 1)[1], stage_events[1].split(":", 1)[1])
         self.assertLess(events.index("history"), events.index(stage_events[1]))
         self.assertLess(events.index("promote"), events.index("send"))
+
+    def test_partial_group_claim_releases_claimed_rows_and_never_sends_subset(self):
+        events = []
+        Base, Adaptive = self._modules(events, send_success=True)
+        second_spec = SimpleNamespace(name="Synthetic Package 2", prefix="beverage", product_id="beverage:demo2:adult")
+        Base.SPEC_BY_ID[second_spec.product_id] = second_spec
+        original_parse = Base.parse_history
+        def parse_history(profile, watchlist, lines):
+            snapshot = original_parse(profile, watchlist, lines)
+            snapshot["products"].append({"product_id": second_spec.product_id, "traveler_role": "adult", "current": 80.0})
+            return snapshot
+        Base.parse_history = staticmethod(parse_history)
+        Adaptive.build_alerts = staticmethod(lambda *_args: [
+            {"kind":"watch_new_low","product_id":"beverage:demo:adult","role":"adult","current":90.0,"previous_low":100.0,"savings":30.0,"spec":Base.SPEC_BY_ID["beverage:demo:adult"]},
+            {"kind":"watch_new_low","product_id":second_spec.product_id,"role":"adult","current":80.0,"previous_low":100.0,"savings":60.0,"spec":second_spec},
+        ])
+
+        class Store:
+            def __init__(self, _base, _profile):
+                self.intents = []
+                self.claim_count = 0
+            def record_provider_run(self, _run_at, _success): events.append("provider-marker")
+            def stage(self, intents): self.intents = list(intents); events.append("stage")
+            def promote_verified_evidence(self): return len(self.intents)
+            def load_open(self):
+                return [{"intent_id":i["intent_id"],"intent":i,"delivery_state":"pending","evidence_state":"committed","attempt_count":0,"attempt_id":None} for i in self.intents]
+            def supersede(self, *_args): raise AssertionError
+            def claim(self, record):
+                self.claim_count += 1
+                events.append(f"claim{self.claim_count}")
+                if self.claim_count == 2: return None
+                return {**record,"delivery_state":"dispatching","attempt_count":1,"attempt_id":"nda1_first"}
+            def release_claim(self, record):
+                events.append("release:"+record["intent_id"])
+                return True
+            def record_result(self, *_args): raise AssertionError("transport must not run")
+            def write_legacy_delivery_event(self, *_args): raise AssertionError
+
+        code = delivery.main(Adaptive, Base, store_factory=Store)
+        self.assertEqual(code, 1)
+        self.assertEqual(events.count("send"), 0)
+        self.assertEqual(len([e for e in events if e.startswith("release:")]), 1)
 
     def test_transport_success_with_ack_write_failure_returns_nonzero_and_does_not_blind_resend(self):
         events = []

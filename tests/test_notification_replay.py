@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import sqlite3
 import sys
 import unittest
 from pathlib import Path
@@ -114,12 +115,12 @@ class ReplayTests(unittest.TestCase):
         rows = [
             {
                 "product_id": Spec.product_id, "passenger_class": "adult", "status": "available",
-                "prior_status": "available", "current_price": 75.0,
+                "prior_status": "available", "current_price": 75.0, "continuity_proven": 1,
                 "observed_at": "2030-01-03T12:00:00Z", "recency_rank": 1,
             },
             {
                 "product_id": Spec.product_id, "passenger_class": "adult", "status": "available",
-                "prior_status": "sold_out", "current_price": 75.0,
+                "prior_status": "sold_out", "current_price": 75.0, "continuity_proven": 1,
                 "observed_at": "2030-01-02T12:00:00Z", "recency_rank": 2,
             },
         ]
@@ -136,6 +137,34 @@ class ReplayTests(unittest.TestCase):
         )
         self.assertEqual(replayed["intent_id"], original["intent_id"])
 
+    def test_restock_replay_fails_closed_without_provider_continuity_proof(self):
+        base_row = {
+            "product_id": Spec.product_id, "passenger_class": "adult", "status": "available",
+            "prior_status": "sold_out", "current_price": 75.0,
+            "observed_at": "2030-01-02T12:00:00Z", "recency_rank": 1,
+        }
+        self.assertEqual(replay.reconstruct_availability_candidates([base_row], Base), [])
+        failed_gap = {**base_row, "continuity_proven": 0}
+        self.assertEqual(replay.reconstruct_availability_candidates([failed_gap], Base), [])
+        adjacent = {**base_row, "continuity_proven": 1}
+        self.assertEqual(len(replay.reconstruct_availability_candidates([adjacent], Base)), 1)
+
+    def test_availability_replay_query_requires_adjacent_provider_run_markers(self):
+        calls = []
+        class ContinuityBase(Base):
+            @staticmethod
+            def d1_request(batch):
+                calls.append(batch)
+                if len(batch) == 2:
+                    return [{"results": []}, {"results": []}]
+                return [{"results": []}]
+        self.assertEqual(replay.load_bounded_replay_candidates(PROFILE, ContinuityBase, Adaptive), [])
+        availability_sql = calls[1][0]["sql"]
+        self.assertIn("notification_observation_runs_v1", availability_sql)
+        self.assertIn("prior_observed_at", availability_sql)
+        self.assertIn("NOT EXISTS", availability_sql)
+        self.assertIn("continuity_proven", availability_sql)
+
     def test_purchase_replay_preserves_original_threshold(self):
         rows = [{
             "source": "authenticated_royal_purchase", "product_id": "purchase:demo",
@@ -149,6 +178,77 @@ class ReplayTests(unittest.TestCase):
         candidate = replay.reconstruct_price_candidates(PROFILE, rows, purchases, Base, Adaptive)[0]
         self.assertEqual(candidate["alert"]["kind"], "purchase_reprice")
         self.assertEqual(candidate["alert"]["savings"], 60.0)
+
+    def test_restock_sql_continuity_breaks_on_any_intervening_provider_run(self):
+        class SqliteBase(Base):
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            @classmethod
+            def d1_request(cls, batch):
+                result = []
+                for query in batch:
+                    cursor = cls.conn.execute(query["sql"], query.get("params") or [])
+                    result.append({"success": True, "results": [dict(row) for row in cursor.fetchall()]})
+                return result
+
+        conn = SqliteBase.conn
+        conn.executescript("""
+        CREATE TABLE price_snapshots(
+          id INTEGER PRIMARY KEY,household_id TEXT,sailing_id TEXT,booking_id TEXT,
+          product_id TEXT,source TEXT,passenger_class TEXT,observed_price REAL,
+          normalized_total REAL,promotion_label TEXT,observed_at TEXT
+        );
+        CREATE TABLE purchases(
+          product_id TEXT,passenger_scope TEXT,paid_unit_price REAL,paid_total REAL,
+          currency TEXT,household_id TEXT,sailing_id TEXT,booking_id TEXT,active INTEGER
+        );
+        CREATE TABLE products(id TEXT,name TEXT,prefix TEXT,price_unit TEXT);
+        CREATE TABLE product_availability(
+          id INTEGER PRIMARY KEY,household_id TEXT,sailing_id TEXT,booking_id TEXT,
+          product_id TEXT,passenger_class TEXT,status TEXT,observed_at TEXT
+        );
+        CREATE TABLE notification_observation_runs_v1(
+          household_id TEXT,sailing_id TEXT,run_at TEXT,outcome TEXT
+        );
+        """)
+        before = "2030-01-02T10:00:00+00:00"
+        gap = "2030-01-02T11:00:00+00:00"
+        current = "2030-01-02T12:00:00+00:00"
+        conn.execute(
+            "INSERT INTO product_availability VALUES(1,?,?,?,?,?,?,?)",
+            (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id, "adult", "sold_out", before),
+        )
+        conn.execute(
+            "INSERT INTO product_availability VALUES(2,?,?,?,?,?,?,?)",
+            (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id, "adult", "available", current),
+        )
+        conn.execute(
+            "INSERT INTO price_snapshots VALUES(1,?,?,?,?,?,?,?,?,?,?)",
+            (PROFILE.label, Base.SAILING_ID, Base.booking_id(PROFILE), Spec.product_id,
+             "authenticated_royal", "adult", 75.0, 225.0, None, current),
+        )
+        for run_at, outcome in [(before, "success"), (current, "success")]:
+            conn.execute(
+                "INSERT INTO notification_observation_runs_v1 VALUES(?,?,?,?)",
+                (PROFILE.label, Base.SAILING_ID, run_at, outcome),
+            )
+        conn.commit()
+
+        adjacent = replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive)
+        self.assertEqual([item["alert"]["kind"] for item in adjacent], ["availability_return"])
+
+        for outcome in ("provider_failed", "success"):
+            conn.execute(
+                "INSERT INTO notification_observation_runs_v1 VALUES(?,?,?,?)",
+                (PROFILE.label, Base.SAILING_ID, gap, outcome),
+            )
+            conn.commit()
+            broken = replay.load_bounded_replay_candidates(PROFILE, SqliteBase, Adaptive)
+            self.assertFalse(any(item["alert"]["kind"] == "availability_return" for item in broken))
+            conn.execute("DELETE FROM notification_observation_runs_v1 WHERE run_at=?", (gap,))
+            conn.commit()
+
+        conn.close()
 
     def test_legacy_delivery_suppresses_rollout_duplicate(self):
         candidate = {

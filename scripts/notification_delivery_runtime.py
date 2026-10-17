@@ -54,6 +54,21 @@ CREATE INDEX IF NOT EXISTS idx_notification_delivery_open
   ON notification_delivery_intents(household_id,sailing_id,delivery_state,evidence_state)
 """
 
+_PROVIDER_RUN_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS notification_observation_runs_v1 (
+  household_id TEXT NOT NULL,
+  sailing_id TEXT NOT NULL,
+  run_at TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('success','provider_failed')),
+  PRIMARY KEY(household_id,sailing_id,run_at)
+)
+"""
+
+_PROVIDER_RUN_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_notification_observation_runs_v1
+  ON notification_observation_runs_v1(household_id,sailing_id,run_at)
+"""
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -392,7 +407,71 @@ class DeliveryStore:
         self.base.d1_request([
             {"sql": _SCHEMA_SQL, "params": []},
             {"sql": _INDEX_SQL, "params": []},
+            {"sql": _PROVIDER_RUN_SCHEMA_SQL, "params": []},
+            {"sql": _PROVIDER_RUN_INDEX_SQL, "params": []},
         ])
+
+    def record_provider_run(self, run_at: str, success: bool) -> None:
+        """Persist sanitized provider-run continuity independently of product observations."""
+        when = str(run_at or "").strip()
+        if not when:
+            raise ValueError("provider run timestamp is required")
+        self.ensure_schema()
+        outcome = "success" if success else "provider_failed"
+        self.base.d1_request([{
+            "sql": """
+            INSERT OR IGNORE INTO notification_observation_runs_v1(
+              household_id,sailing_id,run_at,outcome
+            ) VALUES(?,?,?,?)
+            """,
+            "params": [self.household_id, self.sailing_id, when, outcome],
+        }])
+
+    def availability_contiguous(self, product_id: str, role: str, current_observed_at: str) -> bool:
+        """Prove the previous unavailable observation is from the immediately prior provider run."""
+        bid = self.base.booking_id(self.profile)
+        rows = self.base.d1_request([{
+            "sql": """
+            WITH previous AS (
+              SELECT status,observed_at
+                FROM product_availability
+               WHERE household_id=? AND sailing_id=? AND booking_id=?
+                 AND product_id=? AND COALESCE(passenger_class,'all')=?
+                 AND julianday(observed_at)<julianday(?)
+               ORDER BY id DESC LIMIT 1
+            )
+            SELECT p.status,p.observed_at AS prior_observed_at,
+                   CASE
+                     WHEN p.status IN ('unavailable_or_already_booked','sold_out')
+                      AND EXISTS (
+                        SELECT 1 FROM notification_observation_runs_v1 r
+                         WHERE r.household_id=? AND r.sailing_id=?
+                           AND r.run_at=p.observed_at AND r.outcome='success'
+                      )
+                      AND EXISTS (
+                        SELECT 1 FROM notification_observation_runs_v1 r
+                         WHERE r.household_id=? AND r.sailing_id=?
+                           AND r.run_at=? AND r.outcome='success'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM notification_observation_runs_v1 r
+                         WHERE r.household_id=? AND r.sailing_id=?
+                           AND julianday(r.run_at)>julianday(p.observed_at)
+                           AND julianday(r.run_at)<julianday(?)
+                      )
+                     THEN 1 ELSE 0
+                   END AS continuity_proven
+              FROM previous p
+            """,
+            "params": [
+                self.household_id, self.sailing_id, bid, product_id, role, current_observed_at,
+                self.household_id, self.sailing_id,
+                self.household_id, self.sailing_id, current_observed_at,
+                self.household_id, self.sailing_id, current_observed_at,
+            ],
+        }])
+        result = (rows[0].get("results") or []) if rows else []
+        return bool(result and int(result[0].get("continuity_proven") or 0) == 1)
 
     def stage(self, intents: list[dict[str, Any]]) -> None:
         if not intents:
@@ -597,6 +676,26 @@ class DeliveryStore:
         claimed["attempt_id"] = attempt_id
         claimed["last_attempt_at"] = attempted_at
         return claimed
+
+    def release_claim(self, record: dict[str, Any]) -> bool:
+        """Return a pre-transport claim to retryable state; guarded by exact attempt identity."""
+        now = utc_now_iso()
+        rows = self.base.d1_request([{
+            "sql": """
+            UPDATE notification_delivery_intents
+               SET delivery_state='pending',attempt_id=NULL,updated_at=?
+             WHERE intent_id=? AND household_id=? AND sailing_id=?
+               AND delivery_state='dispatching' AND attempt_id=?
+            """,
+            "params": [
+                now,
+                record["intent_id"],
+                self.household_id,
+                self.sailing_id,
+                record["attempt_id"],
+            ],
+        }])
+        return _changes(rows) == 1
 
     def record_result(self, record: dict[str, Any], success: bool) -> bool:
         now = utc_now_iso()
@@ -814,6 +913,7 @@ def main(
 
     exit_code = 0
     for profile in profiles:
+        store = store_factory(base, profile)
         state = adaptive.history_state(profile)
         if not state.available:
             print(f"::warning::Could not load adaptive D1 state for {profile.label}; using bounded fallback")
@@ -825,6 +925,13 @@ def main(
             status, lines = base.run_upstream(profile, cfg, Path(tmp) / "config.json")
         if status != 0:
             exit_code = status
+            failed_at = utc_now_iso()
+            try:
+                recorder = getattr(store, "record_provider_run", None)
+                if recorder is not None:
+                    recorder(failed_at, False)
+            except Exception:
+                print(f"::warning::Could not persist provider-failure continuity marker for {profile.label}")
             if profile.apprise_url:
                 base.send_apprise(
                     profile,
@@ -843,9 +950,48 @@ def main(
         purchases = adaptive.parse_purchases(profile, lines, snapshot["observed_at"])
         alerts = adaptive.build_alerts(profile, snapshot, purchases, state)
 
+        provider_continuity_recorded = True
+        current_observed_at = str(snapshot.get("observed_at") or utc_now_iso())
+        try:
+            recorder = getattr(store, "record_provider_run", None)
+            if recorder is not None:
+                recorder(current_observed_at, True)
+        except Exception:
+            # Missing continuity evidence must fail closed for restock, but does not
+            # suppress valid Royal observation/history persistence in this successful run.
+            provider_continuity_recorded = False
+            print(f"::warning::Could not persist provider-success continuity marker for {profile.label}")
+            exit_code = max(exit_code, 1)
+
+        # v4 derives a current-run restock from the latest availability row. ALERT-REL-001
+        # additionally requires provider-run adjacency: a failed or successful-but-unobserved
+        # intervening run breaks the unavailable->available transition. Price/reprice alerts
+        # remain independent of this availability-only continuity gate.
+        continuity_checked_alerts: list[dict[str, Any]] = []
+        for alert in alerts:
+            if alert.get("kind") != "availability_return":
+                continuity_checked_alerts.append(alert)
+                continue
+            contiguous = False
+            try:
+                checker = getattr(store, "availability_contiguous", None)
+                if provider_continuity_recorded and checker is not None:
+                    contiguous = bool(checker(
+                        str(alert.get("product_id") or ""),
+                        str(alert.get("role") or "all"),
+                        current_observed_at,
+                    ))
+            except Exception:
+                contiguous = False
+            if contiguous:
+                continuity_checked_alerts.append(alert)
+            else:
+                print("::warning::Availability-restored alert suppressed because provider-run continuity is unproven")
+                exit_code = max(exit_code, 1)
+        alerts = continuity_checked_alerts
+
         suppress = base.truthy(base.env("SUPPRESS_ALERTS"))
         intents: list[dict[str, Any]] = []
-        store = store_factory(base, profile)
         staged = True
         if alerts and not suppress:
             try:
@@ -917,17 +1063,42 @@ def main(
                     eligible.append(record)
 
             claimed: list[dict[str, Any]] = []
+            claim_failed = False
             for record in eligible:
                 try:
                     claim = store.claim(record)
                 except Exception:
                     print("::warning::Notification delivery claim failed closed")
                     exit_code = max(exit_code, 1)
+                    claim_failed = True
                     continue
-                if claim is not None:
+                if claim is None:
+                    claim_failed = True
+                    exit_code = max(exit_code, 1)
+                else:
                     claimed.append(claim)
 
-            if claimed:
+            # Transport is all-or-none for the consolidated eligible set. A partial CAS
+            # claim must never split one intended grouped notification across runs.
+            if claim_failed or len(claimed) != len(eligible):
+                if claimed:
+                    print("::warning::Partial notification delivery claim; transport skipped and claims released")
+                release_failed = False
+                for record in claimed:
+                    try:
+                        releaser = getattr(store, "release_claim", None)
+                        if releaser is None or not releaser(record):
+                            release_failed = True
+                    except Exception:
+                        release_failed = True
+                if release_failed:
+                    # Any unreleased row remains dispatching/ambiguous and therefore blocks
+                    # automatic resend until reconciled; still never send a subset.
+                    print("::warning::Partial notification claim release is ambiguous; automatic send blocked")
+                    exit_code = max(exit_code, 1)
+                claimed = []
+
+            if claimed and len(claimed) == len(eligible):
                 title, body = render_claimed_delivery(profile, claimed, snapshot, purchases, base)
                 email_ok = base.send_apprise(profile, title, body)
                 result_write_failed = False
