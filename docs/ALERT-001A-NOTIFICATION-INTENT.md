@@ -150,15 +150,9 @@ Updates delivery records following a transport attempt:
 
 ## Compatibility
 
-This release does not replace or alter the current runtime tracker alert pipeline:
+ALERT-001A's pure `src/notification-intent.mjs` contract remains provider-neutral and deterministic. ALERT-REL-001 has since evolved the repository source around that pure boundary: accepted source now includes durable D1 notification-delivery/provider-run continuity state and adaptive-v5 runtime/workflow wiring that consumes the intent contract.
 
-- `build_alerts()` remains unchanged;
-- `consolidate_alerts()` remains unchanged;
-- `send_apprise()` remains unchanged;
-- `persist_notification_events()` remains unchanged;
-- no D1 schema or production workflow changes are made.
-
-A later separately authorized integration may adapt legacy alert dictionaries to the accepted pure intent boundary with parity tests.
+That is source/runtime-contract evolution, not production activation. Accepting or merging this source does not itself provision or mutate a live D1 database, send Royal/provider or Apprise traffic, create or rotate secrets, change repository/settings/scheduler configuration, or redirect a production deployment. Those remain separate deployment actions under the production and cutover boundaries in `docs/ARCHITECTURE.md`.
 
 ## Test contract
 
