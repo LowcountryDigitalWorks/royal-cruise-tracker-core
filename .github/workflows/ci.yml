@@ -60,10 +60,11 @@ jobs:
           set -euo pipefail
           node --check src/ux-fixtures.mjs
           node --check src/ux-model.mjs
+          node --check src/net-value.mjs
           node --check prototype/app.mjs
 
-      - name: Run deterministic UX prototype tests
-        run: node --test tests/test_ux_model.mjs tests/test_ux_static.mjs
+      - name: Run deterministic UX and net-value tests
+        run: node --test tests/test_ux_model.mjs tests/test_ux_static.mjs tests/test_net_value.mjs
 
       - name: Enforce current-tree public-data boundary
         run: python3 scripts/validate_public_boundary.py
