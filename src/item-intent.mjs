@@ -5,13 +5,14 @@ function expectObject(v, label) {
   return v;
 }
 function expectKeys(v, allowed, label) {
-  for (const key of Object.keys(v)) if (!allowed.includes(key)) throw new TypeError(label + ' has unexpected field');
+  for (const key of Reflect.ownKeys(v)) if (!allowed.includes(key)) throw new TypeError(label + ' has unexpected field');
 }
 function prefs(value) {
   if (value === null) return null;
   const p = expectObject(value, 'preferences');
   expectKeys(p, ['deliveryMode', 'quietHoursEnabled'], 'preferences');
-  if (!MODES.has(p.deliveryMode) || typeof p.quietHoursEnabled !== 'boolean') {
+  if (!Object.hasOwn(p, 'deliveryMode') || !Object.hasOwn(p, 'quietHoursEnabled')
+      || !MODES.has(p.deliveryMode) || typeof p.quietHoursEnabled !== 'boolean') {
     throw new TypeError('Invalid notification preferences');
   }
   return Object.freeze({ deliveryMode: p.deliveryMode, quietHoursEnabled: p.quietHoursEnabled });
@@ -19,7 +20,8 @@ function prefs(value) {
 function initial(current) {
   const s = expectObject(current, 'current');
   expectKeys(s, ['pinned', 'watched', 'preferences'], 'current');
-  if (typeof s.pinned !== 'boolean' || typeof s.watched !== 'boolean' || !Object.hasOwn(s, 'preferences')) {
+  if (!Object.hasOwn(s, 'pinned') || !Object.hasOwn(s, 'watched') || !Object.hasOwn(s, 'preferences')
+      || typeof s.pinned !== 'boolean' || typeof s.watched !== 'boolean') {
     throw new TypeError('Explicit pin/watch booleans and preferences are required');
   }
   const p = prefs(s.preferences);
@@ -28,7 +30,13 @@ function initial(current) {
 }
 // Pure intent semantics. A Watch event is NOT a provider authorization, a
 // scheduler dispatch, or a notification send. Those remain separately gated.
-export function transitionItemIntent({ current, action, preferencesPatch } = {}) {
+export function transitionItemIntent(input = {}) {
+  const request = expectObject(input, 'request');
+  expectKeys(request, ['current', 'action', 'preferencesPatch'], 'request');
+  if (!Object.hasOwn(request, 'current') || !Object.hasOwn(request, 'action')) {
+    throw new TypeError('Current state and intent action must be explicitly supplied');
+  }
+  const { current, action, preferencesPatch } = request;
   const before = initial(current);
   if (!ACTIONS.has(action)) throw new TypeError('Unknown intent action');
   const provided = preferencesPatch !== undefined;
