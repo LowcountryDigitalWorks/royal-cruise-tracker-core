@@ -57,6 +57,13 @@ test('stale/failed latest and missing price produce insufficient evidence',()=>{
   assert.equal(check(500,400,{current:observation(400,{stale:true})}).status,'insufficient-evidence');
   assert.equal(check(500,400,{current:observation(null,{status:'failed',availability:'unknown'})}).status,'insufficient-evidence');
 });
+test('stale baseline cannot produce complete better outcome',()=>{
+  const r=check(500,400,{baseline:observation(500,{stale:true})});
+  assert.equal(r.status,'insufficient-evidence');
+  assert.equal(r.knownNetDelta,null);
+  assert.equal(r.direction,'unknown');
+  assert.deepEqual(r.comparabilityReasons,['baseline-evidence-stale']);
+});
 test('zero and negative signed adjustments are stable',()=>{
   assert.equal(check(500,400,{currentAdjustments:[credit('zero',0)]}).knownNetDelta,100);
   assert.equal(check(500,400,{currentAdjustments:[credit('penalty',-25,{kind:'adjustment'})]}).knownNetDelta,75);

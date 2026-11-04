@@ -75,10 +75,10 @@ export function analyzeNetValue(input) {
   if (typeof termsCompared !== 'boolean') throw new TypeError('termsCompared must be an explicit boolean');
   const unknown = reasons(unknownValueComponents, 'unknownValueComponents');
   const terms = reasons(materialTermDifferences, 'materialTermDifferences');
-  if (current.status !== 'valid' || baseline.status !== 'valid' || current.stale === true
+  if (current.status !== 'valid' || baseline.status !== 'valid' || current.stale === true || baseline.stale === true
       || current.value == null || baseline.value == null) {
     return output('insufficient-evidence', {
-      unknownComponents: unknown, comparabilityReasons: ['latest-evidence-unavailable'],
+      unknownComponents: unknown, comparabilityReasons: [baseline.stale === true ? 'baseline-evidence-stale' : 'latest-evidence-unavailable'],
       manualNextStep: 'Verify fresh complete price evidence before comparing known value.',
     });
   }
