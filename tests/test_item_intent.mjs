@@ -77,3 +77,38 @@ test('result state, change list and events are frozen', () => {
   assert.ok(Object.isFrozen(r) && Object.isFrozen(r.state)
     && Object.isFrozen(r.changedFields) && Object.isFrozen(r.events));
 });
+test('prototype-inherited watched and pinned flags are not explicit intent', () => {
+  const forged = Object.create({ pinned: false, watched: true });
+  forged.preferences = null;
+  assert.throws(() => apply(forged, 'pin'), TypeError);
+  const inheritedPin = Object.create({ pinned: true });
+  inheritedPin.watched = false;
+  inheritedPin.preferences = null;
+  assert.throws(() => apply(inheritedPin, 'watch'), TypeError);
+});
+test('prototype-inherited notification preferences cannot activate Watch options', () => {
+  const forged = Object.create({ deliveryMode: 'instant', quietHoursEnabled: false });
+  assert.throws(() => apply(empty, 'watch', forged), TypeError);
+  const halfInherited = Object.create({ quietHoursEnabled: false });
+  halfInherited.deliveryMode = 'digest';
+  assert.throws(() => apply(empty, 'watch', halfInherited), TypeError);
+  assert.deepEqual(apply(empty, 'watch', { deliveryMode: 'instant', quietHoursEnabled: false }).state,
+    { pinned: false, watched: true, preferences: { deliveryMode: 'instant', quietHoursEnabled: false } });
+});
+test('intent action and current state must be explicitly present on request', () => {
+  const forged = Object.create({ action: 'watch' });
+  forged.current = empty;
+  assert.throws(() => transitionItemIntent(forged), TypeError);
+  const implicitCurrent = Object.create({ current: empty });
+  implicitCurrent.action = 'watch';
+  assert.throws(() => transitionItemIntent(implicitCurrent), TypeError);
+  assert.deepEqual(transitionItemIntent({ current: empty, action: 'watch' }).state, watching);
+});
+test('nonenumerable and symbol metadata cannot smuggle authority fields', () => {
+  const extra = Object.defineProperty({ ...empty }, 'householdAuth', { value: true, enumerable: false });
+  assert.throws(() => apply(extra, 'watch'), TypeError);
+  const symbolState = { ...empty, [Symbol('membership')]: 'owner' };
+  assert.throws(() => apply(symbolState, 'watch'), TypeError);
+  const patchWithSecret = Object.defineProperty({ ...patch }, 'endpoint', { value: 'fake', enumerable: false });
+  assert.throws(() => apply(empty, 'watch', patchWithSecret), TypeError);
+});
