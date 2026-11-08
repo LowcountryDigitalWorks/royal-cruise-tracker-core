@@ -112,3 +112,35 @@ test('nonenumerable and symbol metadata cannot smuggle authority fields', () => 
   const patchWithSecret = Object.defineProperty({ ...patch }, 'endpoint', { value: 'fake', enumerable: false });
   assert.throws(() => apply(empty, 'watch', patchWithSecret), TypeError);
 });
+
+test('prototype-inherited request preferences patch never becomes explicit Watch authority', () => {
+  for (const action of ['watch', 'set-preferences']) {
+    const forged = Object.create({ preferencesPatch: patch });
+    forged.current = action === 'watch' ? empty : watching;
+    forged.action = action;
+    assert.throws(() => transitionItemIntent(forged), TypeError);
+  }
+  const inheritedNull = Object.create({ preferencesPatch: null });
+  inheritedNull.current = empty;
+  inheritedNull.action = 'watch';
+  assert.throws(() => transitionItemIntent(inheritedNull), TypeError);
+  const inheritedUndefined = Object.create({ preferencesPatch: undefined });
+  inheritedUndefined.current = empty;
+  inheritedUndefined.action = 'watch';
+  assert.throws(() => transitionItemIntent(inheritedUndefined), TypeError);
+  assert.deepEqual(transitionItemIntent({ current: empty, action: 'watch', preferencesPatch: patch }).state,
+    { pinned: false, watched: true, preferences: patch });
+});
+
+test('an inherited patch accessor is not evaluated while intent is rejected', () => {
+  let invoked = 0;
+  const inherited = {};
+  Object.defineProperty(inherited, 'preferencesPatch', {
+    get() { invoked += 1; throw new Error('inherited property getter must not be read'); },
+  });
+  const request = Object.create(inherited);
+  request.current = empty;
+  request.action = 'watch';
+  assert.throws(() => transitionItemIntent(request), TypeError);
+  assert.equal(invoked, 0);
+});

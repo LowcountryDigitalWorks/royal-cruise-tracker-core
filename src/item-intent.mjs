@@ -36,6 +36,11 @@ export function transitionItemIntent(input = {}) {
   if (!Object.hasOwn(request, 'current') || !Object.hasOwn(request, 'action')) {
     throw new TypeError('Current state and intent action must be explicitly supplied');
   }
+  // An inherited preferencesPatch is not an explicit notification intent.
+  // Check before destructuring so inherited accessors are never evaluated.
+  if (!Object.hasOwn(request, 'preferencesPatch') && 'preferencesPatch' in request) {
+    throw new TypeError('Preferences patch must be explicitly supplied');
+  }
   const { current, action, preferencesPatch } = request;
   const before = initial(current);
   if (!ACTIONS.has(action)) throw new TypeError('Unknown intent action');
